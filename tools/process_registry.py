@@ -2085,16 +2085,57 @@ PROCESS_SCHEMA = {
 }
 
 
-def _redact_process_result(result: dict) -> dict:
+def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
     """Redact secrets from background-process output before it reaches the model,
     session.db and CLI, mirroring the foreground ``terminal`` redaction so the two
     surfaces can't diverge. Respects ``security.redact_secrets``; ``redact_terminal_output``
     picks ``code_file`` from the recorded command. The command itself is redacted too.
 
     The command string itself is also redacted in case it carried an inline credential. See #43025.
+
+    Invokes ``transform_terminal_output`` before redaction so background output
+    follows the documented foreground pipeline. Any hook replacement then
+    passes through the existing redaction loop before it can reach the model.
+    Every background action returns through here, so ``poll``, ``wait``,
+    ``log``, and ``kill`` are covered by the single call site. ``returncode``
+    is None while a process has not exited. The hook is fail-open (first valid
+    string return wins); exceptions are swallowed so a misbehaving plugin
+    can't break process polling.
     """
     if not isinstance(result, dict):
         return result
+    command = result.get("command") or ""
+
+    # Match the foreground terminal path: transform raw output first, then
+    # redact the final value. This prevents a hook replacement from injecting
+    # an unmasked credential into the model-visible result.
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        # ``exit_code`` is only present once the process has exited, so a poll
+        # on a running process and every ``log`` read have none. Pass that
+        # through as None instead of defaulting to 0, which would tell a plugin
+        # the command succeeded when it has not finished at all.
+        returncode = result.get("exit_code")
+        for field in ("output", "output_preview"):
+            value = result.get(field)
+            if not isinstance(value, str) or not value:
+                continue
+            hook_results = invoke_hook(
+                "transform_terminal_output",
+                command=command,
+                output=value,
+                returncode=returncode,
+                task_id=task_id or "",
+                env_type="",
+            )
+            for hook_result in hook_results:
+                if isinstance(hook_result, str):
+                    result[field] = hook_result
+                    break
+    except Exception:
+        pass
+
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
@@ -2189,7 +2230,7 @@ def _handle_process(args, **kw):
             return tool_error(f"session_id is required for {action}")
         handler, redact = _SESSION_ACTIONS[action]
         result = handler(session_id, args)
-        return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
+        return json.dumps(_redact_process_result(result, task_id=kw.get("task_id") or "") if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 
 
