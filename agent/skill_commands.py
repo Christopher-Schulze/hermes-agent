@@ -23,6 +23,8 @@ _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
 # applied by hermes_cli/commands_platforms.py, not here.
+# Underscores stay in the class so intentional names (``__spec-driven``) are not
+# collapsed (#75620).
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
@@ -55,8 +57,10 @@ SKILL_EXCERPT_JOINT = "\x1e"
 
 def slugify_skill_name(name: str) -> str:
     """Normalize a skill/bundle name to a ``/command`` slug (``Foo Bar`` -> ``foo-bar``);
-    strips chars (``+``, ``/``) that would make invalid Telegram command names."""
-    cmd = _SKILL_INVALID_CHARS.sub("", name.lower().replace(" ", "-").replace("_", "-"))
+    strips chars (``+``, ``/``) that would make invalid Telegram command names.
+    Underscores are preserved so intentional names (``__demo``, ``git_helper``)
+    stay distinct from hyphenated siblings (#75620)."""
+    cmd = _SKILL_INVALID_CHARS.sub("", name.lower().replace(" ", "-"))
     return _SKILL_MULTI_HYPHEN.sub("-", cmd).strip("-")
 
 
@@ -464,16 +468,28 @@ def reload_skills() -> Dict[str, Any]:
 
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical ``/slug`` key, or None.
-    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
+    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``.
+    Keys preserve intentional underscores from the skill name (#75620). Exact
+    match is tried first so ``/__demo`` and ``/git_helper`` resolve to those
+    keys. When the exact key is missing, underscores are rewritten to hyphens
+    so Telegram clients that forbid hyphens in bot commands can still hit a
+    hyphenated skill key (``/claude_code`` → ``/claude-code``)."""
     return resolve_slash_key(command, get_skill_commands())
 
 
 def resolve_slash_key(command: str, table: Dict[str, Any]) -> Optional[str]:
-    """``command`` -> ``"/slug"`` when present in *table* (``_`` normalized to ``-``), else None."""
+    """``command`` -> ``"/slug"`` when present in *table*; tries exact match
+    first (preserving underscores), then ``_`` → ``-`` fallback, else None."""
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in table else None
+    exact = f"/{command}"
+    if exact in table:
+        return exact
+    # Telegram may swap hyphens for underscores in bot-command names.
+    hyphenated = f"/{command.replace('_', '-')}"
+    if hyphenated != exact and hyphenated in table:
+        return hyphenated
+    return None
 
 
 def build_skill_invocation_message(
