@@ -310,8 +310,55 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     # Lightpanda sessions (Browser Use mode hides the tools that consume supervisor state).
     if not force_local and not (session_info.get("features") or {}).get("lightpanda"):
         _cdp._ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
 
     return session_info
+
+
+def _bind_session_page_target(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Copy the supervisor's dedicated page target onto session_info.
+
+    Multi-session CDP isolation requires the public browser path (navigate /
+    click / …) to know which page this task_id owns (#69727).
+    """
+    if not session_info.get("cdp_url") and not _cdp._get_cdp_override_raw():
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return
+        target_id = supervisor.page_target_id()
+        if target_id:
+            session_info["page_target_id"] = target_id
+    except Exception as exc:
+        _bt.logger.debug(
+            "Could not bind page_target_id for task=%s: %s", task_id, exc
+        )
+
+
+def _activate_session_page_target(task_id: str, session_info: Dict[str, Any]) -> None:
+    """Focus this task's dedicated CDP page before agent-browser CLI work."""
+    if not session_info.get("cdp_url") and not session_info.get("page_target_id"):
+        return
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return
+        result = supervisor.activate_owned_page()
+        if not result.get("ok"):
+            _bt.logger.debug(
+                "activate_owned_page for task=%s: %s",
+                task_id,
+                result.get("error") or "unknown",
+            )
+    except Exception as exc:
+        _bt.logger.debug(
+            "Could not activate page_target_id for task=%s: %s", task_id, exc
+        )
 
 
 def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str) -> None:
@@ -577,6 +624,9 @@ def _run_browser_command(
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
+        # Focus this task's dedicated page so agent-browser CLI hits our tab,
+        # not another session's (#69727).
+        _activate_session_page_target(task_id, session_info)
 
     # Cloud/CDP: ``--cdp <ws_url>`` (NEVER with --session: agent-browser >=0.13
     # would create a local browser and silently ignore --cdp). Local: ``--session <name>``.
