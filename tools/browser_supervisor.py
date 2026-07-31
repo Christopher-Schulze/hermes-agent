@@ -119,6 +119,14 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        # Dedicated page target for this Hermes task_id. Multiple sessions can
+        # share one headed browser via the same CDP endpoint; each supervisor
+        # must own its own tab so they do not race on the first open page
+        # (#69727).
+        self._page_target_id: Optional[str] = None
+        self._owns_page_target: bool = False
+        self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
+
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
@@ -150,6 +158,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if loop is not None and loop.is_running():
             # Close the WebSocket from inside the loop so ``async for raw in self._ws``
             # returns cleanly, ``_run`` hits its ``finally``, THEN the thread exits.
+            # _close_ws also drops our dedicated page target first (#69727).
             with contextlib.suppress(Exception):  # loop already shutting down / close timed out
                 _schedule(self._close_ws(), loop, timeout=2.0)
         if self._thread is not None:
@@ -291,7 +300,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return True
 
     async def _close_ws(self) -> None:
-        """Detach and close the current WebSocket, swallowing close errors."""
+        """Drop our dedicated tab, then detach and close the WebSocket, swallowing close errors."""
+        # Drop our dedicated tab before closing the socket so shared headed
+        # browsers do not accumulate blank pages per session (#69727).
+        with contextlib.suppress(Exception):
+            await self._close_owned_page_target()
         ws, self._ws = self._ws, None
         if ws is not None:
             with contextlib.suppress(Exception):
@@ -351,13 +364,84 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
+    async def _resolve_dedicated_page_target(self) -> str:
+        """Return a page target exclusive to this supervisor/task_id.
+
+        Prefer re-attaching to a page we already created (reconnect path).
+        Otherwise always ``Target.createTarget`` a fresh blank page — never
+        adopt the first existing page, which is shared across all Hermes
+        sessions connected to the same headed browser (#69727).
+        """
+        if self._page_target_id:
+            try:
+                resp = await self._cdp("Target.getTargets")
+                targets = (resp.get("result") or {}).get("targetInfos") or []
+                if any(
+                    isinstance(t, dict) and t.get("targetId") == self._page_target_id
+                    for t in targets
+                ):
+                    return self._page_target_id
+            except Exception as exc:
+                logger.debug(
+                    "CDP supervisor %s: getTargets while reusing page failed: %s",
+                    self.task_id,
+                    _redact_cdp_error_text(exc),
+                )
+            # Prior page is gone (user closed tab, browser restarted, …).
+            self._page_target_id = None
+            self._owns_page_target = False
+
+        created = await self._cdp("Target.createTarget", {"url": "about:blank"})
+        target_id = (created.get("result") or {}).get("targetId")
+        if target_id:
+            self._page_target_id = str(target_id)
+            self._owns_page_target = True
+            return self._page_target_id
+
+        # Rare backend: createTarget rejected or returned nothing. Fall back to
+        # an existing page only as last resort so attach can still succeed.
+        resp = await self._cdp("Target.getTargets")
+        targets = (resp.get("result") or {}).get("targetInfos") or []
+        page_target = next(
+            (t for t in targets if isinstance(t, dict) and t.get("type") == "page"),
+            None,
+        )
+        if page_target is None or not page_target.get("targetId"):
+            raise RuntimeError(
+                "CDP Target.createTarget returned no targetId and no page target exists"
+            )
+        self._page_target_id = str(page_target["targetId"])
+        self._owns_page_target = False
+        logger.warning(
+            "CDP supervisor %s: createTarget unavailable; reusing shared page %s "
+            "(multi-session tab isolation degraded)",
+            self.task_id,
+            self._page_target_id[:16],
+        )
+        return self._page_target_id
+
+    async def _close_owned_page_target(self) -> None:
+        """Close the blank page we created for this task_id, if any."""
+        if not self._owns_page_target or not self._page_target_id:
+            return
+        target_id = self._page_target_id
+        try:
+            await self._cdp("Target.closeTarget", {"targetId": target_id})
+        except Exception as exc:
+            logger.debug(
+                "CDP supervisor %s: closeTarget %s failed: %s",
+                self.task_id,
+                target_id[:16],
+                _redact_cdp_error_text(exc),
+            )
+        finally:
+            self._page_target_id = None
+            self._owns_page_target = False
+
     async def _attach_initial_page(self) -> None:
-        """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""
-        targets = (await self._cdp("Target.getTargets")).get("result", {}).get("targetInfos", [])
-        page_target = next((t for t in targets if t.get("type") == "page"), None)
-        if page_target is None:
-            page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
-        attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
+        """Attach a dedicated page target, enable domains, install dialog bridge."""
+        target_id = await self._resolve_dedicated_page_target()
+        attach = await self._cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True})
         self._page_session_id = sid = attach["result"]["sessionId"]
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)
