@@ -20,7 +20,11 @@ _skill_commands_home: Optional[str] = None
 # Guards the (map, platform-tag, home-tag) triple so publication and the
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
-_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
+# Patterns for sanitizing skill names into slash-command slugs.
+# Telegram bot commands allow a-z, 0-9, and underscore — keep intentional
+# underscores (e.g. ``__spec-driven``) so they are not silently collapsed
+# into a different command name (#75620).
+_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9_-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
@@ -52,8 +56,10 @@ SKILL_EXCERPT_JOINT = "\x1e"
 
 def slugify_skill_name(name: str) -> str:
     """Normalize a skill/bundle name to a ``/command`` slug (``Foo Bar`` -> ``foo-bar``);
-    strips chars (``+``, ``/``) that would make invalid Telegram command names."""
-    cmd = _SKILL_INVALID_CHARS.sub("", name.lower().replace(" ", "-").replace("_", "-"))
+    strips chars (``+``, ``/``) that would make invalid Telegram command names.
+    Underscores are preserved so intentional names (``__demo``, ``git_helper``)
+    stay distinct from hyphenated siblings (#75620)."""
+    cmd = _SKILL_INVALID_CHARS.sub("", name.lower().replace(" ", "-"))
     return _SKILL_MULTI_HYPHEN.sub("-", cmd).strip("-")
 
 
@@ -461,16 +467,28 @@ def reload_skills() -> Dict[str, Any]:
 
 def resolve_skill_command_key(command: str) -> Optional[str]:
     """Resolve a user-typed /command to its canonical ``/slug`` key, or None.
-    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``."""
+    ``_`` ≡ ``-``: Telegram disallows hyphens, so ``/claude-code`` arrives as ``/claude_code``.
+    Keys preserve intentional underscores from the skill name (#75620). Exact
+    match is tried first so ``/__demo`` and ``/git_helper`` resolve to those
+    keys. When the exact key is missing, underscores are rewritten to hyphens
+    so Telegram clients that forbid hyphens in bot commands can still hit a
+    hyphenated skill key (``/claude_code`` → ``/claude-code``)."""
     return resolve_slash_key(command, get_skill_commands())
 
 
 def resolve_slash_key(command: str, table: Dict[str, Any]) -> Optional[str]:
-    """``command`` -> ``"/slug"`` when present in *table* (``_`` normalized to ``-``), else None."""
+    """``command`` -> ``"/slug"`` when present in *table*; tries exact match
+    first (preserving underscores), then ``_`` → ``-`` fallback, else None."""
     if not command:
         return None
-    cmd_key = f"/{command.replace('_', '-')}"
-    return cmd_key if cmd_key in table else None
+    exact = f"/{command}"
+    if exact in table:
+        return exact
+    # Telegram may swap hyphens for underscores in bot-command names.
+    hyphenated = f"/{command.replace('_', '-')}"
+    if hyphenated != exact and hyphenated in table:
+        return hyphenated
+    return None
 
 
 def build_skill_invocation_message(
