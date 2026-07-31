@@ -37,6 +37,21 @@ _publish_lock = threading.Lock()
 # collapsed (#75620).
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+# Mirror hermes_cli.commands._sanitize_telegram_name for collision policy.
+_TG_SKILL_INVALID = re.compile(r"[^a-z0-9_]")
+_TG_SKILL_MULTI_UNDERSCORE = re.compile(r"_{2,}")
+
+
+def telegram_bot_command_form(bare: str) -> str:
+    """Telegram Bot API form of a skill slug (hyphens → underscores, strip invalid).
+
+    Used for menu collision policy: two distinct skill keys that collapse to the
+    same Telegram command name must resolve deterministically (#75620).
+    """
+    name = bare.lower().lstrip("/").replace("-", "_")
+    name = _TG_SKILL_INVALID.sub("", name)
+    name = _TG_SKILL_MULTI_UNDERSCORE.sub("_", name)
+    return name.strip("_")
 
 # Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
 # model-facing message embedding the full skill body; memory providers storing
@@ -699,17 +714,29 @@ def reload_skills() -> Dict[str, Any]:
 def resolve_skill_command_key(command: str, *, interactive: bool = False) -> Optional[str]:
     """Resolve a user-typed slash command, or return None.
 
-    Try the exact qualified spelling before the filesystem skill slug fallback,
-    where underscores and hyphens are interchangeable for Telegram. Native
-    callers retain the filesystem-only lookup; plugin skills are interactive.
+    Telegram bot commands cannot contain hyphens, so colliding keys (``/git_helper`` and
+    ``/git-helper``) resolve to the lexicographically first key, the same order the
+    Telegram menu is built in. Native callers retain the filesystem-only lookup; plugin
+    skills are interactive.
     """
     return resolve_slash_key(command, get_interactive_skill_commands() if interactive else get_skill_commands())
 
 
 def resolve_slash_key(command: str, table: Mapping[str, Any]) -> Optional[str]:
-    """``command`` -> ``"/slug"`` when present in *table* (``_`` normalized to ``-``), else None."""
+    """``command`` -> ``"/slug"`` when present in *table*, else None.
+
+    Collision first-wins by Telegram form, then the exact key, then the ``_`` -> ``-`` fallback.
+    """
     if not command:
         return None
+    bare = command.lstrip("/")
+    telegram_form = telegram_bot_command_form(bare)
+    if telegram_form:
+        collisions = sorted(
+            key for key in table if telegram_bot_command_form(key.lstrip("/")) == telegram_form
+        )
+        if collisions:
+            return collisions[0]
     exact_key = f"/{command.lower()}"
     if exact_key in table:
         return exact_key
