@@ -388,9 +388,22 @@ def _memory_provider_generic(name: str) -> None:
 @doctor_check()
 def _check_memory_provider(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME
-    name = _doctor_memory_config(HERMES_HOME).get("provider", "")
+    raw_name = _doctor_memory_config(HERMES_HOME).get("provider", "")
+    # Align with runtime/dashboard: builtin/built-in/none → no external plugin.
+    try:
+        from plugins.memory import normalize_memory_provider_name as _norm_mem_provider
+        name = _norm_mem_provider(raw_name)
+    except Exception:
+        name = raw_name
+        if str(name).strip().lower() in {"built-in", "builtin", "none"}:
+            name = ""
     if not name:
-        check_ok("Built-in memory active", "(no external provider configured — this is fine)")
+        check_ok(
+            "Built-in memory active",
+            "(builtin provider configured — this is fine)"
+            if str(raw_name).strip()
+            else "(no external provider configured — this is fine)",
+        )
         return
     checker, missing_row, missing_issue, label = _MEMORY_PROVIDER_CHECKS.get(name, (None, None, None, name))
     try:
