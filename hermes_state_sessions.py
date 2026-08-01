@@ -88,6 +88,22 @@ def _where_sql(clauses: List[str], lead: str = "") -> str:
     return f"{lead}WHERE {' AND '.join(clauses)}" if clauses else ""
 
 
+def _session_source_matches(
+    row_source: Any,
+    *,
+    include_sources: Optional[List[str]] = None,
+    exclude_sources: Optional[List[str]] = None,
+) -> bool:
+    """Return whether a (possibly projected) session source matches filters."""
+    src = row_source if row_source not in (None, "") else "cli"
+    if include_sources:
+        if src not in include_sources:
+            return False
+    if exclude_sources and src in exclude_sources:
+        return False
+    return True
+
+
 def _session_filter_where(
     *, exclude_children: bool = False, source: str = None, sources: List[str] = None,
     session_key: str = None, exclude_sources: List[str] = None, cwd_prefix: str = None,
@@ -1199,9 +1215,30 @@ class SessionSessionsMixin:
         by the chain TIP via a recursive CTE (the only path honouring ``id_query`` / ``search_query``);
         ``include_pinned`` back-fills pins the page missed, still obeying the other filters."""
         self.flush_token_counts()  # rows carry token/cost totals
+        # When projecting compression tips, source membership is defined by the
+        # *live tip* source, not the root. Defer include/exclude until after
+        # projection so telegram→webui chains appear under source=webui (#75625).
+        include_sources = [source] if source else list(sources or [])
+        defer_source_filter = bool(
+            project_compression_tips
+            and not include_children
+            and (include_sources or exclude_sources)
+        )
+        deferred_include_sources: List[str] = []
+        deferred_exclude_sources: List[str] = []
+        page_limit, page_offset = limit, offset
+        if defer_source_filter:
+            deferred_include_sources = list(include_sources)
+            deferred_exclude_sources = list(exclude_sources or [])
+            include_sources = []
+            exclude_sources = None
+            # Over-fetch then filter/slice so LIMIT is not applied to the wrong
+            # pre-projection population. Cap keeps pathological DBs bounded.
+            limit = min(max((page_limit + page_offset) * 25, page_limit + page_offset, 100), 10_000)
+            offset = 0
         where_clauses, params = _session_filter_where(
-            exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
-            exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
+            exclude_children=not include_children, source=None, sources=None, session_key=session_key,
+            exclude_sources=None, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
         if not include_hidden:
@@ -1287,6 +1324,17 @@ class SessionSessionsMixin:
                     sessions.append(s)
         if project_compression_tips and not include_children:
             sessions = self._project_compression_tips(sessions, compact_rows)
+        if defer_source_filter:
+            sessions = [
+                s
+                for s in sessions
+                if _session_source_matches(
+                    s.get("source"),
+                    include_sources=deferred_include_sources,
+                    exclude_sources=deferred_exclude_sources,
+                )
+            ]
+            sessions = sessions[page_offset : page_offset + page_limit]
         # last_read_at is lineage-stamped, so root and tip watermarks agree.
         for s in sessions:
             s["unread"] = self.session_unread(s)
@@ -1390,7 +1438,24 @@ class SessionSessionsMixin:
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: List[str] = None,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches."""
+        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
+
+        With ``exclude_children=True`` and a source filter, membership matches
+        ``list_sessions_rich`` after compression-tip projection (tip source),
+        not the raw root source (#75625).
+        """
+        include_sources = [source] if source else list(sources or [])
+        if exclude_children and (include_sources or exclude_sources):
+            # Projected-tip semantics: reuse list_sessions_rich (defers source
+            # until after tip projection) with a large page and count results.
+            rows = self.list_sessions_rich(
+                source=source, sources=sources, exclude_sources=exclude_sources,
+                cwd_prefix=cwd_prefix, min_message_count=min_message_count,
+                include_archived=include_archived, archived_only=archived_only,
+                limit=10_000, offset=0, project_compression_tips=True,
+                include_children=False,
+            )
+            return len(rows)
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
@@ -1406,7 +1471,22 @@ class SessionSessionsMixin:
         self, *, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False,
     ) -> Dict[str, int]:
-        """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility."""
+        """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility.
+
+        Counts use the **projected tip** source when compression tips are
+        projected (#75625).
+        """
+        if exclude_children:
+            rows = self.list_sessions_rich(
+                limit=10_000, offset=0, include_archived=include_archived,
+                archived_only=archived_only, project_compression_tips=True,
+                include_children=False,
+            )
+            counts: Dict[str, int] = {}
+            for s in rows:
+                src = s.get("source") if s.get("source") not in (None, "") else "cli"
+                counts[str(src)] = counts.get(str(src), 0) + 1
+            return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
