@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -445,6 +446,58 @@ def _activate_session_page_target(task_id: str, session_info: Dict[str, Any]) ->
         _bt.logger.debug(
             "Could not activate page_target_id for task=%s: %s", task_id, exc
         )
+
+
+# agent-browser's CDP mode has no command-line target/session selector.  For a
+# shared endpoint we therefore use its own stable tab ids inside a single
+# ``batch`` request (``tab tN`` followed by the real operation).  The fallback
+# lock below protects older/proxy backends where that tab lookup is unavailable
+# by keeping Target.activateTarget and the CLI command in one critical section.
+_CDP_PAGE_BOUND_COMMANDS = frozenset({
+    "back",
+    "click",
+    "console",
+    "errors",
+    "eval",
+    "fill",
+    "open",
+    "press",
+    "record",
+    "screenshot",
+    "scroll",
+    "snapshot",
+})
+_cdp_binding_locks: Dict[str, threading.Lock] = {}
+_cdp_binding_locks_guard = threading.Lock()
+
+
+def _cdp_binding_lock(cdp_url: str) -> threading.Lock:
+    """Return the process-wide lock for one shared CDP endpoint."""
+    with _cdp_binding_locks_guard:
+        return _cdp_binding_locks.setdefault(cdp_url, threading.Lock())
+
+
+def _session_page_tab_ref(task_id: str, session_info: Dict[str, Any]) -> Optional[str]:
+    """Return the agent-browser tab ref bound to this Hermes task's page."""
+    if not session_info.get("cdp_url"):
+        return None
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+
+        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        if supervisor is None:
+            return None
+        result = supervisor.page_target_tab_ref()
+        if result.get("ok") and result.get("tab_ref"):
+            return str(result["tab_ref"])
+        _bt.logger.debug(
+            "Could not resolve agent-browser tab ref for task=%s: %s",
+            task_id,
+            result.get("error"),
+        )
+    except Exception as exc:
+        _bt.logger.debug("page-target tab binding error for task=%s: %s", task_id, exc)
+    return None
 
 
 def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str) -> None:
@@ -934,10 +987,31 @@ def _run_browser_command(
             _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
             return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
         def _dispatch_owned() -> "tuple[str, Dict[str, Any]]":
-            if command != "close" and session_info.get("cdp_url"):
-                _activate_session_page_target(task_id, session_info)
-            return _dispatch_browser_command(
-                task_id, session_info, browser_cmd, command, args, timeout, _engine_override)
+            if command == "close" or not session_info.get("cdp_url"):
+                return _dispatch_browser_command(
+                    task_id, session_info, browser_cmd, command, args, timeout, _engine_override)
+            _cdp._ensure_cdp_supervisor(task_id)
+            _bind_session_page_target(task_id, session_info)
+            tab_ref = _session_page_tab_ref(task_id, session_info) if command in _CDP_PAGE_BOUND_COMMANDS else None
+            binding_lock = _cdp_binding_lock(str(session_info["cdp_url"])) if tab_ref is None else None
+            if binding_lock is not None:
+                binding_lock.acquire()
+            engine = _engine_override or _cloud._get_browser_engine()
+            prefix = _agent_browser_argv(browser_cmd) + ["--cdp", session_info["cdp_url"]]
+            try:
+                if tab_ref is None:
+                    _activate_session_page_target(task_id, session_info)
+                    cmd_parts = prefix + ["--json", command] + args
+                else:
+                    import shlex
+                    cmd_parts = prefix + ["--json", "batch", shlex.join(["tab", tab_ref]), shlex.join([command, *args])]
+                result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
+            except Exception as exc:
+                result = {"success": False, "error": str(exc)}
+            finally:
+                if binding_lock is not None:
+                    binding_lock.release()
+            return engine, result
 
         engine, result = run_fenced_pair(session_info, _dispatch_owned)
         if result.get("code") == "human_has_control":
