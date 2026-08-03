@@ -1521,9 +1521,18 @@ class GatewayNotificationsMixin:
     def _redacted_output_tail(session, limit: int) -> str:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
         from gateway.run import _redact_gateway_user_facing_secrets
+        from tools.process_registry import transform_terminal_output
         new_output = session.output_buffer[-limit:] if session.output_buffer else ""
         if new_output:
+            new_output = transform_terminal_output(
+                new_output,
+                command=getattr(session, "command", "") or "",
+                returncode=session.exit_code,
+                task_id=getattr(session, "task_id", "") or "",
+            )
+            from tools.ansi_strip import strip_ansi
             from agent.redact import redact_terminal_output
+            new_output = strip_ansi(new_output)
             new_output = redact_terminal_output(new_output, getattr(session, "command", "") or "")
             # redact_terminal_output() is unforced (raw when security.redact_secrets is off); this goes
             # straight to the adapter, so apply the same unconditional floor as agent-notify.
@@ -1545,10 +1554,18 @@ class GatewayNotificationsMixin:
     def _build_process_completion_event(watcher: dict, session, session_id: str) -> dict:
         """Build the synthetic ``completion`` event for an agent-notify watcher."""
         from gateway.run import _redact_gateway_user_facing_secrets
+        from tools.process_registry import transform_terminal_output
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
         _command = getattr(session, "command", "") or ""
-        _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
+        _raw = session.output_buffer if session.output_buffer else ""
+        _raw = transform_terminal_output(
+            _raw,
+            command=_command,
+            returncode=session.exit_code,
+            task_id=getattr(session, "task_id", "") or "",
+        )
+        _raw = strip_ansi(_raw)
         _raw = redact_terminal_output(_raw, _command)
         # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
         _LIMIT = 2000
