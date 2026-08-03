@@ -3490,6 +3490,12 @@ class TestCompressionChainProjection:
             (t0 + 101, "xtip"),
         )
         db.append_message("xtip", "user", "continued in webui")
+        db.create_session(
+            "xdelegate",
+            "telegram",
+            parent_session_id="xroot",
+            model_config={"_delegate_from": "xroot"},
+        )
         db._conn.commit()
 
         # Unfiltered list: projected tip carries source=webui.
@@ -3518,7 +3524,7 @@ class TestCompressionChainProjection:
         assert db.session_count(source="webui", exclude_children=True) >= 1
         assert db.session_count(source="telegram", exclude_children=True) == 0
         by_src = db.session_count_by_source(exclude_children=True)
-        assert by_src.get("webui", 0) >= 1
+        assert by_src == {"webui": 1}
 
 
     def test_list_handles_broken_chain_gracefully(self, db):
