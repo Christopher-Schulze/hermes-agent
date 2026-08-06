@@ -434,12 +434,20 @@ def _probe_single_server(
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))
         except (TypeError, ValueError):
             connect_timeout = 30.0
-    # Deep transport code (tools/mcp_tool_transport.py::_negotiate_session) reads its OWN
-    # session.initialize() bound straight off config["connect_timeout"], independent of the
-    # `connect_timeout` param above. Callers that extend the param to give a user time to finish
-    # an OAuth browser flow (e.g. `hermes mcp login`'s 315s) left that inner bound at the
-    # (unrelated) 60s default, so the still-pending OAuth callback wait got cancelled mid-flow —
-    # surfacing as a retry that re-opens a second authorization against the same callback port.
+    else:
+        try:
+            connect_timeout = max(1.0, float(connect_timeout))
+        except (TypeError, ValueError):
+            connect_timeout = 30.0
+
+    # Propagate the effective connect_timeout into the server config that
+    # _connect_server / MCPServerTask.run sees. Without this, _run_http falls
+    # back to its own 60 s default for the handshake even when the caller
+    # (dashboard OAuth, 'hermes mcp login') explicitly passes a 315 s floor.
+    # The mismatch caused session.initialize() to time out mid-consent and
+    # restart the OAuth flow under the user, silently superseding the state
+    # the browser had already been sent to (#80521).
+    config = dict(config)
     config["connect_timeout"] = connect_timeout
 
     _ensure_mcp_loop()
