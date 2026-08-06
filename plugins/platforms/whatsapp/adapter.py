@@ -226,7 +226,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
 _MAX_TEXT_INJECT_BYTES = 100 * 1024  # matches Telegram/Discord/Slack
-_NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER}
+_NATIVE_MEDIA_TYPES = {"location": MessageType.LOCATION, "live_location": MessageType.LOCATION, "sticker": MessageType.STICKER, "gif": MessageType.PHOTO}
 # Inbound mediaType substring → kind; ptt = WhatsApp voice note, so "ptt" must precede "audio".
 _MEDIA_NEEDLES = (("image", MessageType.PHOTO), ("video", MessageType.VIDEO), ("ptt", MessageType.VOICE), ("audio", MessageType.AUDIO))
 # MessageType → (bridge label, default mime); documents take their mime from SUPPORTED_DOCUMENT_TYPES instead.
@@ -745,10 +745,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         accepted: list[tuple] = []  # (url_or_path, mime)
         label, default_mime = _MEDIA_INFO.get(msg_type, (None, ""))
         bridge_mime = str(data.get("mime") or "").strip()
+        # Animated GIFs arrive as videoMessage with gifPlayback=true and the
+        # bridge reports mediaType 'gif' (#80063).
+        is_gif = str(data.get("mediaType", "") or "") == "gif"
+        if is_gif and msg_type == MessageType.PHOTO:
+            default_mime = "image/gif"
         for url in data.get("mediaUrls", []):
             mime = bridge_mime or (SUPPORTED_DOCUMENT_TYPES.get(Path(url).suffix.lower(), "application/octet-stream") if msg_type == MessageType.DOCUMENT else default_mime)
             if url.startswith(("http://", "https://")) and msg_type in {MessageType.PHOTO, MessageType.VOICE, MessageType.AUDIO}:
-                cacher, ext = (cache_image_from_url, ".jpg") if msg_type == MessageType.PHOTO else (cache_audio_from_url, ".ogg")
+                ext = ".gif" if is_gif and msg_type == MessageType.PHOTO else (".jpg" if msg_type == MessageType.PHOTO else ".ogg")
+                cacher = cache_image_from_url if msg_type == MessageType.PHOTO else cache_audio_from_url
                 try:
                     url = await cacher(url, ext=ext)
                     print(f"[{self.name}] Cached user {label}: {url}", flush=True)
