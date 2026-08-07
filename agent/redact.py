@@ -323,7 +323,14 @@ _URL_BARE_TOKEN_RE = re.compile(
 _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
 # E.164 phone numbers, 7-15 digits; the lookahead rejects hex strings / identifiers.
-_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
+# Also matches bare digit-only E.164-like sequences (10-15 digits) so
+# WhatsApp Cloud wa_id values without a leading '+' are redacted.
+_SIGNAL_PHONE_RE = re.compile(
+    r"(?<![A-Za-z0-9])"              # don't clip a longer numeric run
+    r"(\+[1-9]\d{6,14}"             # explicit +E.164 form, 7-15 digits
+    r"|[1-9]\d{9,14})"               # bare wa_id / E.164-like, 10-15 digits
+    r"(?![A-Za-z0-9])"
+)
 
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).
@@ -636,8 +643,8 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "&" in text and "=" in text:
         text = _redact_form_body(text)
 
-    if "+" in text:
-        text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+    # E.164 and bare phone-like numbers (Signal, WhatsApp, WhatsApp Cloud wa_id).
+    text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
 
