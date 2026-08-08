@@ -231,7 +231,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         ):
             batch = json.loads(
                 delegate_task(
-                    tasks=[{"goal": "A"}, {"goal": "B"}],
+                    tasks=[{"goal": "First batch task A"}, {"goal": "Second batch task B"}],
                     parent_agent=parent,
                 )
             )
@@ -260,7 +260,7 @@ class TestSessionChildrenCap(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 delegate_task(
-                    tasks=[{"goal": "A"}, {"goal": "B"}],
+                    tasks=[{"goal": "First build failure task"}, {"goal": "Second build failure task"}],
                     parent_agent=parent,
                 )
             mock_run.assert_not_called()
@@ -269,7 +269,7 @@ class TestSessionChildrenCap(unittest.TestCase):
             mock_build.return_value = MagicMock()
             retry = json.loads(
                 delegate_task(
-                    tasks=[{"goal": "C"}, {"goal": "D"}],
+                    tasks=[{"goal": "Retry first child task"}, {"goal": "Retry second child task"}],
                     parent_agent=parent,
                 )
             )
