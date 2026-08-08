@@ -324,11 +324,7 @@ _JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_=-]{4,}){0,2}")
 
 # E.164 phone numbers: +<country><number>, 7-15 digits.
 # Negative lookahead prevents matching hex strings or identifiers.
-_SIGNAL_PHONE_RE = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(\+[1-9]\d{6,14})"
-    r"(?![A-Za-z0-9])"
-)
+_SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
 # WhatsApp Cloud wa_id values are bare 10-15 digit E.164-like sequences.
 # Keep this separate from the established +E.164 matcher so code-shaped
