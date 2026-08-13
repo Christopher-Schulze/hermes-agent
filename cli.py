@@ -996,6 +996,12 @@ def _finalize_single_query(cli) -> None:
             except Exception:
                 logger.debug("one-shot %s failed", what, exc_info=True)
         _notify_single_query_session_finalize(cli)
+        agent = getattr(cli, "agent", None)
+        if agent is not None and hasattr(agent, "close"):
+            try:
+                agent.close()
+            except Exception:
+                logging.debug("single-query agent close failed", exc_info=True)
         _run_cleanup(notify_session_finalize=False)
     finally:
         cli._release_active_session()
