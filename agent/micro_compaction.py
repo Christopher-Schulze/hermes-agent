@@ -168,9 +168,11 @@ class MicroCompactionMixin:
         # Empty base turns the merge prompt into a rewrite-compactly instruction.
         self._micro_compact_rolling_summary = ""
         fresh_summary = self._micro_summarize_one(old_summary)
-        self._micro_compact_rolling_summary = fresh_summary or old_summary
         if not fresh_summary:
+            self._micro_compact_rolling_summary = old_summary
             return False
+        fresh_summary = _cc()._redact_compaction_text(fresh_summary)
+        self._micro_compact_rolling_summary = fresh_summary
         # Rewrite only the newest MICRO marker (resume rehydrates from it); a batch marker holds
         # history we lack.
         entry = next((e for e in reversed(messages) if _is_micro_marker(e)), None)
