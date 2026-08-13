@@ -808,12 +808,6 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
-    # Prefer the request-scoped api_server origin binding over HERMES_SESSION_ID: the env
-    # var is clobbered with a subagent's internal id whenever a child agent is constructed
-    # in-process, which would stamp — and later wake — the wrong session.
-    from tools.async_delegation import _current_origin_session_id
-    session_id = (args.get("session_id") or _current_origin_session_id()
-                  or os.environ.get("HERMES_SESSION_ID"))
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing
@@ -829,9 +823,22 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
+        # Resolve the session to wake on completion. Prefer the request-scoped
+        # api_server origin binding over HERMES_SESSION_ID: the env var is
+        # clobbered with a subagent's internal id whenever a child agent is
+        # constructed in-process, which would stamp — and later wake — the
+        # wrong session. In a dispatcher-spawned worker HERMES_SESSION_ID is
+        # the worker's own ephemeral session; child cards must wake the
+        # durable parent session stored on the worker's task row (#85575).
+        from tools.async_delegation import _current_origin_session_id
+        session_id: Optional[str] = args.get("session_id") or _current_origin_session_id()
+        self_tid = os.environ.get("HERMES_KANBAN_TASK")
+        self_task = kb.get_task(conn, self_tid) if self_tid else None
+        if not session_id and self_task is not None and self_task.session_id:
+            session_id = self_task.session_id
+        if not session_id:
+            session_id = os.environ.get("HERMES_SESSION_ID")
         if project_id is None and workspace_kind is None and workspace_path is None:
-            self_tid = os.environ.get("HERMES_KANBAN_TASK")
-            self_task = kb.get_task(conn, self_tid) if self_tid else None
             if self_task is not None and self_task.project_id:
                 project_id, project_source_task_id = self_task.project_id, self_task.id
         new_tid = kb.create_task(
