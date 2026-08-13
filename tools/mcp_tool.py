@@ -9,11 +9,13 @@ Task (``MCPServerTask``) so the transport's anyio cancel scopes enter and exit i
 all shared state; the ``mcp_tool_*`` siblings read that state back through ``tools.mcp_tool`` at
 call time (``_core``) and are imported directly by their callers."""
 
+import ast
 import asyncio
 import contextvars
 import importlib
 import importlib.util
 import inspect
+import json
 import logging
 import os
 import sys
@@ -36,11 +38,46 @@ from tools.mcp_tool_health import MCPServerHealthMixin
 _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 
 
+def _coerce_mcp_stdio_args(args: Any) -> List[str]:
+    """Turn config ``args`` into an argv list of strings.
+
+    YAML can persist a list as a quoted JSON/Python-literal string
+    (``args: '["-y", "pkg"]'``) or surface scalars as non-string types
+    (``true`` → bool, ``42`` → int). Unpacking such a value directly into
+    the spawn argv treats every character as a token — ``[`` becomes the
+    first argument and ``npx`` dies with ``Invalid tag name "["`` (#79519) —
+    or passes a non-string to ``subprocess`` where it is rejected. Coerce
+    here, before the OSV preflight and cached-npx swap see the args.
+    """
+    if args is None:
+        return []
+    if isinstance(args, (list, tuple)):
+        return [str(item) for item in args]
+    if isinstance(args, str):
+        text = args.strip()
+        if not text:
+            return []
+        parsed: Any = None
+        if text[:1] in "[{":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                try:
+                    parsed = ast.literal_eval(text)
+                except (ValueError, SyntaxError):
+                    parsed = None
+        if isinstance(parsed, (list, tuple)):
+            return [str(item) for item in parsed]
+        return [args]
+    return [str(args)]
+
+
 async def _preflight_stdio_command(server_name: str, command: str, args: list) -> tuple[str, list]:
     """OSV malware preflight (off-loop, wall-clock bound, fail-open on timeout), THEN the
     cached-npx swap. The preflight must see the REAL command/args: anything that rewrites argv to a
     wrapper or resolved binary has to happen after it, or the check silently inspects the wrapper
     and becomes a no-op (``_infer_ecosystem`` keys off the command basename being npx/uvx/pipx)."""
+    args = _coerce_mcp_stdio_args(args)
     from tools.osv_check import check_package_for_malware
     try:
         malware_error = await asyncio.wait_for(
