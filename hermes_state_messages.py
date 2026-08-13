@@ -904,7 +904,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         carried_messages: Optional[list[dict[str, Any]]] = None,
         covered_ids: Optional[list[int]] = None,
         unresolved_held: Optional[list[dict[str, Any]]] = None,
-        held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
+        held_for_cas: Optional[list[dict[str, Any]]] = None,
+        system_prompt: Optional[str] = None) -> int:
         """Non-destructive in-place compaction under ONE session id: soft-archive the active rows (``active=0,
         compacted=1``: summarized away, still searchable) and insert *compacted_messages* as fresh active
         rows, atomically; returns the new ACTIVE count (= ``message_count``). *watermark* (compression
@@ -926,6 +927,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         row is archived (#124102). The lease path leaves it ``None``: its lease rules out an overlapping
         rewrite, and the turn's own writes are the ones a CAS here would misread.
         ``model_config_patch`` merges in the same txn (``None`` removes a key).
+        ``system_prompt``, when given, is stored in that same write so an in-place compaction cannot leave
+        transcript and prompt on opposite sides of a crash (#84722).
 
         Concurrent-append safety (#75316): when *watermark* is provided (the value of
         :meth:`get_active_message_watermark` captured at compression START), rows that arrived during the
@@ -939,7 +942,7 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             conn, session_id, compacted_messages, model_config_patch=model_config_patch,
             watermark=watermark, lock_holder=lock_holder, tail_count=tail_count,
             carried_messages=carried_messages, covered_ids=covered_ids,
-            unresolved_held=unresolved_held, held_for_cas=held_for_cas), compacted_messages)
+            unresolved_held=unresolved_held, held_for_cas=held_for_cas, system_prompt=system_prompt), compacted_messages)
 
     def _archive_and_compact_on_conn(
             self, conn, session_id: str, compacted_messages: list[dict[str, Any]], *,
@@ -948,7 +951,8 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             carried_messages: Optional[list[dict[str, Any]]] = None,
             covered_ids: Optional[list[int]] = None,
             unresolved_held: Optional[list[dict[str, Any]]] = None,
-            held_for_cas: Optional[list[dict[str, Any]]] = None) -> int:
+            held_for_cas: Optional[list[dict[str, Any]]] = None,
+            system_prompt: Optional[str] = None) -> int:
         """:meth:`archive_and_compact` on the caller's write transaction (never commits). The owner
         and the worker/canonical-mutation verbs share this one body so they cannot drift."""
         from hermes_state import SessionCompressionInProgressError
@@ -971,6 +975,11 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
                 from hermes_state_errors import HeldRowRewrittenError
                 raise HeldRowRewrittenError(
                     f"a held row of session {session_id} was rewritten in place before the commit")
+        if system_prompt is not None:
+            prompt_hash = self._store_system_prompt(conn, system_prompt)
+            conn.execute("UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
+                         (prompt_hash, session_id))
+            self._delete_unreferenced_system_prompts(conn)
         proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
         if proved is not None:
             return self._archive_named_rows(
