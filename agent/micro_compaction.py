@@ -52,7 +52,7 @@ class MicroCompactionMixin:
                 self._rolling_summary_from_marker(messages[last].get("content"))
             )
             if recovered:
-                self._micro_compact_rolling_summary = recovered
+                self._micro_compact_rolling_summary = _cc()._redact_compaction_text(recovered)
                 # Rehydration proves containment: this marker (batch or micro) becomes
                 # supersede/defrag-eligible; unabsorbed markers never get the key.
                 messages[last][_cc().MICRO_COMPACT_MARKER_KEY] = True
@@ -277,18 +277,22 @@ class MicroCompactionMixin:
             _telemetry(_outcome, messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens)
             return messages
 
+        updated_summary = _cc()._redact_compaction_text(updated_summary)
+        prev_summary = self._micro_compact_rolling_summary
+        prev_cursor = self._micro_compact_cursor
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
         self._reset_micro_failure_tracking()
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
-        self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
         if not self._sync_micro_compact_to_db(result, held=_held, start_watermark=_start_watermark):
-            # Another compaction committed during the summary call. A true no-op: returning the spliced
-            # list would let finalize_turn persist its unmarked summary row beside the winning generation.
-            self._micro_compact_cursor, self._micro_compact_rolling_summary = _pre_cursor, _pre_summary
-            _telemetry("stale_generation", messages, tokens_after=_tokens_before)
+            self._micro_compact_rolling_summary = prev_summary
+            self._micro_compact_cursor = prev_cursor
+            _telemetry(
+                "persist_failed", messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens,
+            )
             return messages
+        self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
         _telemetry(
             "absorbed", result, tokens_after=estimate_messages_tokens_rough(result), exchange_tokens=_exchange_tokens,
         )
@@ -405,8 +409,8 @@ class MicroCompactionMixin:
     ) -> bool:
         """Persist the micro-compacted set to the session DB atomically and stamp rows persisted.
         Without this the old exchange rows stay ``active=1`` and a resume double-loads both the
-        summary and the originals. Returns False only when *held* turned out to be a stale generation
-        (nothing written); the caller must then discard the pass. Any other outcome returns True."""
+        summary and the originals. Returns False when *held* is stale or persistence fails;
+        the caller must then discard the pass. No DB binding permits in-memory-only operation."""
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return True
@@ -432,6 +436,7 @@ class MicroCompactionMixin:
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)
+            return True
         except _cc().StaleHeldHistory as exc:
             # Another compaction committed during the summary call. Nothing is written: the store already
             # holds the winning generation. The caller discards the pass (original list, pre-pass cursor
@@ -440,10 +445,10 @@ class MicroCompactionMixin:
             return False
         except Exception:
             logger.info(
-                "Micro-compaction DB sync failed — resume will double-load "
-                "compacted messages until the next batch compression"
+                "Micro-compaction DB sync failed — keeping the pre-splice "
+                "transcript rather than publishing an unsynced list"
             )
-        return True
+            return False
 
     def _splice_micro_compact_result(
         self, messages: List[Dict[str, Any]], splice_start: int, splice_end: int, supersede: bool = True,
