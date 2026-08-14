@@ -64,6 +64,37 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
+def _security_scan_skill_strict(skill_dir: Path) -> Optional[str]:
+    """Fail-closed security scan for background-origin skill writes.
+
+    Unlike ``_security_scan_skill``, this always scans (ignores
+    ``guard_agent_created``) and fails closed on scanner exception — neither
+    of which the default foreground path does.
+
+    Returns an error string when the skill must not be published, else None.
+    """
+    try:
+        result = scan_skill(skill_dir, source="agent-created")
+        allowed, reason = should_allow_install(result)
+        if allowed is False:
+            report = format_scan_report(result)
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+        if allowed is None:
+            report = format_scan_report(result)
+            logger.warning(
+                "Background-origin skill blocked (dangerous findings): %s",
+                reason,
+            )
+            return f"Security scan blocked this skill ({reason}):\n{report}"
+    except Exception as e:
+        logger.warning(
+            "Security scan failed for %s: %s", skill_dir, e, exc_info=True,
+        )
+        return (
+            f"Security scan raised an exception and the skill cannot be "
+            f"published from background origin without verification: {e}"
+        )
+    return None
 
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
@@ -382,7 +413,6 @@ def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dic
         result["system_prompt_preview"] = (
             f"System prompt will show: \"{extract_skill_description(fm)}\" — keep the trigger "
             f"self-contained in the first {SKILL_PROMPT_DESC_LIMIT - 3} chars.")
-    return result
 
 
 def _attach_lint_findings(result: Dict[str, Any], skill_md: Path, before: Optional[str] = None) -> None:
@@ -418,8 +448,23 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         return _err(err)
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+    # Background-origin skill creation must fail closed: stage the bytes, scan
+    # with strict semantics, and only publish to the active root on success. No
+    # active SKILL.md may remain on reject or scanner exception
+    # (SECURITY-CLASS-6024d99228f118e5). Foreground keeps the existing
+    # write-then-optional-scan-with-rollback behavior.
     skill_dir = _resolve_skill_dir(name, category)
     from hermes_constants import mkdir_under_hermes_home
+    background = _is_background_review()
+    if background:
+        import tempfile
+        staging = Path(tempfile.mkdtemp(prefix="skill-stage-"))
+        try:
+            atomic_write_text(staging / "SKILL.md", content)
+            if scan_error := _security_scan_skill_strict(staging):
+                return _err(scan_error)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     mkdir_under_hermes_home(skill_dir.parent)
     try:
         skill_dir.mkdir(exist_ok=False)
@@ -436,7 +481,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
                         "directory, or unreadable). Choose another name, or move/remove that path and retry.")
     skill_md = skill_dir / "SKILL.md"
-    if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
+    if background:
+        atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
+    elif guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
         with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
             skill_dir.rmdir()
         return guard
