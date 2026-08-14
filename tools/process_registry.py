@@ -1114,19 +1114,41 @@ class ProcessRegistry(ProcessCheckpointMixin):
         finally:
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                lambda: session.process.wait(timeout=5), lambda: session.process.returncode)
+                lambda: session.process.wait(timeout=5), lambda: session.process.returncode,
+                proc=session.process)
 
-    def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
+    def _finish_reader(self, session, decoder, append, label, wait, exit_code, proc=None) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit."""
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
+
+        For pipe-backed readers (``proc`` given), EOF on the capture pipe is NOT the
+        same as process exit: the child may have closed its stdout/stderr while still
+        alive (issue #86416). If the child cannot be reaped after the wait timeout,
+        leave the session in _running and let poll()/wait() reconcile via
+        _reconcile_local_exit when it actually terminates."""
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
                 append(tail)
+        rc = None
         try:
-            wait()
+            rc = wait()
         except Exception as e:
             logger.debug("%s wait timed out or failed: %s", label, e)
+        # EOF on the capture pipe does not imply the process exited. Only a real
+        # exit code (from wait/poll) lets us safely finish the session.
+        if rc is None and proc is not None:
+            rc = proc.poll()
+        if rc is None and proc is not None:
+            # Direct child is still running after EOF — keep the session
+            # running and do not emit a completion.
+            logger.info(
+                "Process %s reached EOF on capture pipe but the direct child "
+                "is still running (pid=%s); not marking as exited.",
+                session.id,
+                session.pid,
+            )
+            return
         self._finish_exited(session, exit_code())
 
     @staticmethod
