@@ -383,12 +383,23 @@ class SessionSchemaMixin:
         """v23+ external-content 'rebuild'. It indexes EVERY row, so the deferred-backfill
         markers are cleared or the worker would re-insert covered rows (duplicates).
         ``legacy`` (pre-v23 inline layout) has no external-content 'rebuild' source, so it
-        DELETEs + reinserts the concatenated content the legacy triggers produced."""
+        DELETEs + reinserts the concatenated content the legacy triggers produced. A malformed
+        legacy FTS index (e.g. from a legacy schema) raises ``DatabaseError`` on the DELETE;
+        it is dropped and recreated from its DDL before the reinsert."""
         SessionSchemaMixin._stamp_fts_tool_high_water(cursor)
         tables = ("messages_fts", "messages_fts_trigram") if include_trigram else ("messages_fts",)
         for tbl in tables:
+            is_trigram = "_trigram" in tbl
+            triggers = _FTS_TRIGRAM_TRIGGERS if is_trigram else _FTS_BASE_TRIGGERS
+            ddl = _FTS_DDL[legacy][1 if is_trigram else 0]
             if legacy:
-                cursor.execute(f"DELETE FROM {tbl}")
+                try:
+                    cursor.execute(f"DELETE FROM {tbl}")
+                except sqlite3.DatabaseError:
+                    for trigger in triggers:
+                        cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                    cursor.execute(f"DROP TABLE IF EXISTS {tbl}")
+                    cursor.executescript(ddl)
                 cursor.execute(f"INSERT INTO {tbl}(rowid, content) SELECT id, {_LEGACY_INLINE_CONCAT_SQL}FROM messages")
             else:
                 cursor.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")
@@ -602,7 +613,7 @@ class SessionSchemaMixin:
             rebuild_sql = LEGACY_FTS_SQL + (LEGACY_FTS_TRIGRAM_SQL if include_trigram else "")
             rebuild_sql += _legacy_inline_reinsert_sql("messages_fts", 16)
             if include_trigram:
-                rebuild_sql += _legacy_inline_reinsert_sql("messages_fts_trigram", 20, delete_first=True)
+                rebuild_sql += _legacy_inline_reinsert_sql("messages_fts_trigram", 20)
         else:
             rebuild_sql = FTS_SQL + (FTS_TRIGRAM_SQL if include_trigram else "")
             rebuild_sql += "INSERT INTO messages_fts(messages_fts) VALUES('rebuild');"
