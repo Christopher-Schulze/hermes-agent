@@ -500,6 +500,20 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
         logger.debug("Could not write npm lockfile hash cache")
 
 
+def _python_install_group(env: dict | None = None) -> str:
+    """Return the extra group both ZIP and git update paths must hash and install."""
+    from hermes_cli.update_cmd import _m
+    if env is not None:
+        return "termux-all" if _m()._is_termux_env(env) else "all"
+    return "termux-all" if _m()._is_termux_env() else "all"
+
+
+def _python_runtime_token() -> bytes:
+    """Interpreter/platform identity so a moved or upgraded venv cannot skip."""
+    version = "%s.%s.%s" % sys.version_info[:3]
+    return f"{sys.implementation.name}-{version}-{sys.platform}".encode()
+
+
 def _python_dependency_inputs(install_group: str) -> list[tuple[str, bytes | None]]:
     """Return the labelled file contents that determine whether a Python
     dependency reinstall is necessary.
@@ -507,13 +521,16 @@ def _python_dependency_inputs(install_group: str) -> list[tuple[str, bytes | Non
     ``None`` means the file is missing; callers treat a missing
     ``pyproject.toml`` as an unknown state that must trigger a reinstall.
     """
-    from hermes_cli.update_cmd import _m
+    from hermes_cli.update_cmd import _m, _python_runtime_token
     paths = [
         ("pyproject.toml", _m().PROJECT_ROOT / "pyproject.toml"),
         ("uv.lock", _m().PROJECT_ROOT / "uv.lock"),
         ("constraints-termux.txt", _m().PROJECT_ROOT / "constraints-termux.txt"),
     ]
-    inputs: list[tuple[str, bytes | None]] = [("group", install_group.encode())]
+    inputs: list[tuple[str, bytes | None]] = [
+        ("group", install_group.encode()),
+        ("runtime", _python_runtime_token()),
+    ]
     for label, path in paths:
         if not path.exists():
             inputs.append((label, None))
@@ -526,10 +543,8 @@ def _python_dependency_inputs(install_group: str) -> list[tuple[str, bytes | Non
 
 
 def _python_dependencies_digest(install_group: str) -> str | None:
-    """SHA-256 digest over the Python dependency input files."""
+    """SHA-256 digest over the Python dependency input files and runtime."""
     inputs = _python_dependency_inputs(install_group)
-    if not inputs:
-        return None
     # pyproject.toml must exist for a sane install; if it's missing we can't
     # safely declare the inputs unchanged.
     for label, data in inputs:
@@ -584,7 +599,9 @@ def _record_python_dependencies_hash(hermes_root: Path, install_group: str) -> N
     try:
         cache_key = hashlib.sha256(str(_m().PROJECT_ROOT).encode()).hexdigest()[:12]
         cache_file = hermes_root / f".python_dep_hash_{install_group}_{cache_key}"
-        cache_file.write_text(digest, encoding="utf-8")
+        from utils import atomic_write_text
+
+        atomic_write_text(cache_file, digest)
     except OSError:
         logger.debug("Could not write python dependency hash cache")
 
@@ -1078,13 +1095,12 @@ def _sync_python_dependencies_after_pull(
     if not uv_bin:
         _ensure_venv_pip(pip_cmd, sys.executable)
     install_prefix, lazy_env = _pip_install_prefix(uv_bin)
-    install_group = "all"
-    is_termux = _m()._is_termux_env(lazy_env)
+    if lazy_env is not None and _m()._is_termux_env(lazy_env):
+        lazy_env.pop("PYTHONPATH", None)
+        lazy_env.pop("PYTHONHOME", None)
+    install_group = _python_install_group(lazy_env)
+    is_termux = install_group == "termux-all"
     if is_termux:
-        if lazy_env is not None:
-            lazy_env.pop("PYTHONPATH", None)
-            lazy_env.pop("PYTHONHOME", None)
-        install_group = "termux-all"
         uv_note = "uv + " if uv_bin else ""
         print(f"  → Termux detected: using {uv_note}curated termux-all optional profile...")
     from hermes_constants import get_default_hermes_root

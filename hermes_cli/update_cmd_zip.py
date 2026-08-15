@@ -320,7 +320,7 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
     """Reinstall Python deps (uv preferred, pip fallback) and re-arm active tool deps."""
     from hermes_cli.update_cmd import (
         _ensure_uv_for_termux, _ensure_venv_pip, _m, _refuse_update_for_contended_shims, _shim_quarantine_error_type,
-        _python_dependencies_changed, _record_python_dependencies_hash,
+        _python_dependencies_changed, _python_install_group, _record_python_dependencies_hash,
     )
     from hermes_constants import get_default_hermes_root
 
@@ -332,7 +332,6 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
 
     shared_hermes_root = get_default_hermes_root()
-    install_group = "all"
     uv_env = None
     if uv_bin:
         # Same UV-env isolation as the main update path: a user-level UV_PYTHON_INSTALL_DIR / UV_PYTHON
@@ -343,7 +342,7 @@ def _reinstall_python_deps_after_zip(active_tool_dependencies) -> None:
         if _m()._is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-            install_group = "termux-all"
+    install_group = _python_install_group(uv_env)
     if _python_dependencies_changed(shared_hermes_root, install_group):
         if uv_bin:
             try:

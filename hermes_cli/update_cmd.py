@@ -80,6 +80,7 @@ from hermes_cli.update_cmd_deps import (  # noqa: F401
     _ensure_venv_pip, _install_psutil_android_compat, _is_android_python, _npm_bin_exists,
     _npm_lockfile_changed, _npm_manifest_paths, _npm_manifests_digest, _path_uid,
     _python_dependencies_changed, _python_dependencies_digest, _python_dependency_inputs,
+    _python_install_group, _python_runtime_token,
     _rebuild_desktop_after_update, _record_npm_lockfile_hash, _record_python_dependencies_hash,
     _refresh_active_lazy_features,
     _refresh_active_memory_provider_dependencies, _refuse_update_if_venv_foreign_owned,
