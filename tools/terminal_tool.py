@@ -38,6 +38,20 @@ def _redact_terminal_error_text(value: Any) -> str:
     return redact_sensitive_text("" if value is None else str(value), force=True)
 
 
+def _is_timeout_error(exc: BaseException) -> bool:
+    """Return True if *exc* is a timeout from any terminal backend.
+
+    Python's timeout exception texts vary across backends:
+    - concurrent.futures.TimeoutError / asyncio.TimeoutError / builtins.TimeoutError: str() is empty
+    - subprocess.TimeoutExpired: "Command ... timed out after N seconds"
+    Some third-party backends include "timeout" or "timed out" in their message.
+    """
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)):
+        return True
+    error_str = str(exc).lower()
+    return "timed out" in error_str or "timeout" in error_str
+
+
 from tools.registry import tool_error
 from tools.terminal_tool_lifecycle import (
     _check_disk_usage_warning, _cleanup_inactive_envs, _create_configured_env,
@@ -1048,7 +1062,7 @@ def _run_foreground(
             )
             break
         except Exception as e:
-            if "timeout" in str(e).lower():
+            if _is_timeout_error(e):
                 return _error_json(f"Command timed out after {effective_timeout} seconds", exit_code=124)
             # Retry on transient errors
             if retry_count < max_retries:
