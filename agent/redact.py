@@ -335,6 +335,11 @@ _WHATSAPP_BARE_PHONE_RE = re.compile(
     r"(?![A-Za-z0-9])"
 )
 
+# Web/transport URLs whose path/query digits must stay intact. The bare
+# wa_id matcher otherwise rewrites numeric OAuth, magic-link, and
+# pre-signed URL values (issue #80076 review).
+_WEB_URL_SPAN_RE = re.compile(r"(?:https?|wss?|ftp)://[^\s<>\"']+")
+
 # CDP-URL path: web URLs with a query string / with ``user:password@`` userinfo
 # (DB protocols are covered by _DB_CONNSTR_RE).
 _URL_WITH_QUERY_RE = re.compile(r"(https?|wss?|ftp)://([^\s/?#]+)([^\s?#]*)\?([^\s#]+)(#\S*)?")
@@ -565,6 +570,20 @@ def _redact_phone(m):
     return phone[:keep] + "****" + phone[-keep:]
 
 
+def _redact_bare_wa_id_outside_urls(text: str, repl) -> str:
+    """Mask bare Cloud wa_id values, leaving navigable URL bytes unchanged."""
+    if "://" not in text:
+        return _WHATSAPP_BARE_PHONE_RE.sub(repl, text)
+    parts = []
+    last = 0
+    for match in _WEB_URL_SPAN_RE.finditer(text):
+        parts.append(_WHATSAPP_BARE_PHONE_RE.sub(repl, text[last:match.start()]))
+        parts.append(match.group(0))
+        last = match.end()
+    parts.append(_WHATSAPP_BARE_PHONE_RE.sub(repl, text[last:]))
+    return "".join(parts)
+
+
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False,
                           file_read: bool = False, redact_url_credentials: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
@@ -655,7 +674,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     # or other code-review evidence. File content still needs PII redaction;
     # ``file_read=True`` is therefore an explicit exception to code_file=True.
     if not code_file or file_read:
-        text = _WHATSAPP_BARE_PHONE_RE.sub(_redact_phone, text)
+        text = _redact_bare_wa_id_outside_urls(text, _redact_phone)
 
     return text
 
