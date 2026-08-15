@@ -379,32 +379,95 @@ class SessionSchemaMixin:
             logger.debug("Could not drop residual CJK UPDATE trigger after quarantine", exc_info=True)
 
     @staticmethod
+    def _is_malformed_fts_index_error(exc: BaseException) -> bool:
+        """True when *exc* is the corrupt-inline-index class that justifies a
+        drop-and-recreate rebuild, rather than a transient lock/busy/IO error.
+        """
+        if not isinstance(exc, sqlite3.DatabaseError):
+            return False
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "malformed inverted index",
+                "database disk image is malformed",
+                "malformed database schema",
+            )
+        )
+
+    def _legacy_fts_index_corrupt(
+        self, cursor: sqlite3.Cursor, *, include_trigram: bool
+    ) -> bool:
+        """True when a legacy inline FTS index fails FTS5's integrity-check.
+
+        Runs the cheap, non-mutating ``'integrity-check'`` command against each
+        legacy inline index. A corrupt shadow table (e.g. ``malformed inverted
+        index``) raises there even when ordinary reads and trigger-driven
+        writes still succeed, which is exactly the class #86027 reports on a
+        trigger-complete legacy install.
+        """
+        tables = ["messages_fts"]
+        if include_trigram:
+            tables.append("messages_fts_trigram")
+        for table in tables:
+            try:
+                cursor.execute(
+                    f"INSERT INTO {table}({table}) VALUES('integrity-check')"
+                )
+            except sqlite3.DatabaseError as exc:
+                if self._is_malformed_fts_index_error(exc):
+                    return True
+                raise
+            except sqlite3.OperationalError as exc:
+                # Missing table or tokenizer — not the corruption class.
+                if "no such table" in str(exc).lower() or "no such module" in str(exc).lower():
+                    continue
+                raise
+        return False
+
+    @staticmethod
     def _rebuild_fts_indexes(cursor: sqlite3.Cursor, *, legacy: bool = False, include_trigram: bool = True) -> None:
         """v23+ external-content 'rebuild'. It indexes EVERY row, so the deferred-backfill
         markers are cleared or the worker would re-insert covered rows (duplicates).
         ``legacy`` (pre-v23 inline layout) has no external-content 'rebuild' source, so it
-        DELETEs + reinserts the concatenated content the legacy triggers produced. A malformed
-        legacy FTS index (e.g. from a legacy schema) raises ``DatabaseError`` on the DELETE;
-        it is dropped and recreated from its DDL before the reinsert."""
+        DELETEs + reinserts the concatenated content the legacy triggers produced. When the
+        DELETE raises the malformed-index class (``malformed inverted index`` / ``database
+        disk image is malformed``) the whole index is atomically dropped + recreated +
+        backfilled inside one ``BEGIN IMMEDIATE`` transaction — the same shape
+        ``_recover_stale_fts`` uses — so a concurrent writer can never observe a
+        half-dropped index. Lock/busy/disk-IO errors are re-raised so the outer open retry
+        still applies. Never touches the v23 shape."""
         SessionSchemaMixin._stamp_fts_tool_high_water(cursor)
         tables = ("messages_fts", "messages_fts_trigram") if include_trigram else ("messages_fts",)
-        for tbl in tables:
-            is_trigram = "_trigram" in tbl
-            triggers = _FTS_TRIGRAM_TRIGGERS if is_trigram else _FTS_BASE_TRIGGERS
-            ddl = _FTS_DDL[legacy][1 if is_trigram else 0]
-            if legacy:
-                try:
-                    cursor.execute(f"DELETE FROM {tbl}")
-                except sqlite3.DatabaseError:
-                    for trigger in triggers:
-                        cursor.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-                    cursor.execute(f"DROP TABLE IF EXISTS {tbl}")
-                    cursor.executescript(ddl)
-                cursor.execute(f"INSERT INTO {tbl}(rowid, content) SELECT id, {_LEGACY_INLINE_CONCAT_SQL}FROM messages")
-            else:
-                cursor.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")
         if not legacy:
+            for tbl in tables:
+                cursor.execute(f"INSERT INTO {tbl}({tbl}) VALUES('rebuild')")
             cursor.execute(_CLEAR_REBUILD_MARKERS_SQL)
+            return
+        # Legacy inline path: fast path DELETEs + reinserts; on malformed-index
+        # error falls through to an atomic drop + recreate + backfill.
+        try:
+            for tbl in tables:
+                cursor.execute(f"DELETE FROM {tbl}")
+                cursor.execute(f"INSERT INTO {tbl}(rowid, content) SELECT id, {_LEGACY_INLINE_CONCAT_SQL}FROM messages")
+            return
+        except sqlite3.DatabaseError as exc:
+            if not SessionSchemaMixin._is_malformed_fts_index_error(exc):
+                raise
+        # Corrupt inline index: atomically drop triggers + vtable, recreate the
+        # legacy schema, and backfill, in a single write transaction.
+        drop_sql = "".join(f"DROP TRIGGER IF EXISTS {trigger};" for trigger in _FTS_TRIGGERS)
+        if include_trigram:
+            drop_sql += "DROP TABLE IF EXISTS messages_fts_trigram;"
+        drop_sql += "DROP TABLE IF EXISTS messages_fts;"
+        rebuild_sql = LEGACY_FTS_SQL
+        if include_trigram:
+            rebuild_sql += LEGACY_FTS_TRIGRAM_SQL
+        rebuild_sql += _legacy_inline_reinsert_sql("messages_fts", 12)
+        if include_trigram:
+            rebuild_sql += _legacy_inline_reinsert_sql("messages_fts_trigram", 12)
+        recovery_sql = "BEGIN IMMEDIATE;" + drop_sql + rebuild_sql + "COMMIT;"
+        cursor.executescript(recovery_sql)
 
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
         """True = queryable, False = absent, None = FTS module/tokenizer missing or content
@@ -1132,7 +1195,10 @@ class SessionSchemaMixin:
                     # Trigram is optional; without it CJK search falls back to LIKE.
                     trigram_enabled = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
                     self._trigram_available = trigram_enabled
-                    if trigram_enabled and trigram_triggers_missing:
+                    if (trigram_enabled and trigram_triggers_missing) or (
+                        legacy_fts
+                        and self._legacy_fts_index_corrupt(cursor, include_trigram=trigram_enabled)
+                    ):
                         self._run_admitted_startup_rebuild(
                             cursor,
                             lambda: self._rebuild_fts_indexes(
