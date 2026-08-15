@@ -395,6 +395,33 @@ class SessionSchemaMixin:
             )
         )
 
+    _FTS_INTEGRITY_ENGINE_KEY = "fts_integrity_engine"
+
+    def _fts_integrity_engine_id(self, cursor: sqlite3.Cursor) -> str:
+        try:
+            row = cursor.execute("SELECT sqlite_version()").fetchone()
+        except sqlite3.DatabaseError:
+            return "fts5:unknown"
+        return f"fts5:{row[0] if row else 'unknown'}"
+
+    def _legacy_fts_integrity_probe_needed(self, cursor: sqlite3.Cursor) -> bool:
+        """True until a clean integrity-check has run on this SQLite engine."""
+        try:
+            row = cursor.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (self._FTS_INTEGRITY_ENGINE_KEY,),
+            ).fetchone()
+        except sqlite3.DatabaseError:
+            return True
+        return not row or str(row[0] or "") != self._fts_integrity_engine_id(cursor)
+
+    def _record_legacy_fts_integrity_engine(self, cursor: sqlite3.Cursor) -> None:
+        cursor.execute(
+            "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (self._FTS_INTEGRITY_ENGINE_KEY, self._fts_integrity_engine_id(cursor)),
+        )
+
     def _legacy_fts_index_corrupt(
         self, cursor: sqlite3.Cursor, *, include_trigram: bool
     ) -> bool:
@@ -1195,8 +1222,9 @@ class SessionSchemaMixin:
                     # Trigram is optional; without it CJK search falls back to LIKE.
                     trigram_enabled = self._ensure_fts_schema(cursor, "messages_fts_trigram", trigram_sql)
                     self._trigram_available = trigram_enabled
+                    probe_needed = legacy_fts and self._legacy_fts_integrity_probe_needed(cursor)
                     if (trigram_enabled and trigram_triggers_missing) or (
-                        legacy_fts
+                        probe_needed
                         and self._legacy_fts_index_corrupt(cursor, include_trigram=trigram_enabled)
                     ):
                         self._run_admitted_startup_rebuild(
@@ -1205,6 +1233,8 @@ class SessionSchemaMixin:
                                 cursor, legacy=legacy_fts, include_trigram=trigram_enabled,
                             ),
                         )
+                    if probe_needed:
+                        self._record_legacy_fts_integrity_engine(cursor)
             if self._fts_enabled and not legacy_fts and not base_triggers_missing:
                 # CJK-bigram index: strictly additive, gated on the loadable tokenizer.
                 self._ensure_fts_cjk_schema(cursor)
