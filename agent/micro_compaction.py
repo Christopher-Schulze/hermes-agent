@@ -255,6 +255,8 @@ class MicroCompactionMixin:
         updated_summary = _cc()._redact_compaction_text(updated_summary)
         prev_summary = self._micro_compact_rolling_summary
         prev_cursor = self._micro_compact_cursor
+        prev_failures = self._micro_compact_consecutive_failures
+        prev_fail_cursor = self._micro_compact_last_failure_cursor
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
         self._reset_micro_failure_tracking()
@@ -263,6 +265,13 @@ class MicroCompactionMixin:
         if not self._sync_micro_compact_to_db(result):
             self._micro_compact_rolling_summary = prev_summary
             self._micro_compact_cursor = prev_cursor
+            # Count persist failures toward the skip threshold (#84723): a disk
+            # that keeps rejecting the splice retried forever when the counter
+            # was reset. Restore the pre-reset failure state and record this
+            # attempt so _record_micro_failure can skip the stuck exchange.
+            self._micro_compact_consecutive_failures = prev_failures
+            self._micro_compact_last_failure_cursor = prev_fail_cursor
+            self._record_micro_failure(exchange_start, exchange_end)
             _telemetry(
                 "persist_failed", messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens,
             )
