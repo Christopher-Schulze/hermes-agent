@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 KANBAN_LIST_DEFAULT_LIMIT = 50
 KANBAN_LIST_MAX_LIMIT = 200
+KANBAN_TASK_ENV = "HERMES_KANBAN_TASK"
 
 
 # --- Gating ---
@@ -66,7 +67,7 @@ def _visible(*, to_env_worker: bool) -> bool:
     (HERMES_KANBAN_TASK) per flag; else the profile toolset decides."""
     if _is_delegated_child_context():
         return False
-    if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
+    if os.environ.get(KANBAN_TASK_ENV) and _is_dispatcher_owned_worker():
         return to_env_worker
     return _profile_has_kanban_toolset()
 
@@ -132,7 +133,7 @@ def _default_task_id(arg: Optional[str]) -> Optional[str]:
         return arg
     if _is_delegated_child_context() or not _is_dispatcher_owned_worker():
         return None
-    return os.environ.get("HERMES_KANBAN_TASK") or None
+    return os.environ.get(KANBAN_TASK_ENV) or None
 
 
 def _require_task_id(args: dict) -> str:
@@ -143,7 +144,7 @@ def _require_task_id(args: dict) -> str:
 
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
-    return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
+    return os.environ.get(var) if os.environ.get(KANBAN_TASK_ENV) == task_id else None
 
 
 def _worker_run_id(task_id: str) -> Optional[int]:
@@ -170,7 +171,7 @@ def _enforce_worker_task_ownership(tid: str) -> None:
     a buggy or prompt-injected worker that passed an explicit ``task_id`` for some other task could corrupt
     sibling or cross-tenant runs (see #19534).
     """
-    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    env_tid = os.environ.get(KANBAN_TASK_ENV)
     if env_tid and tid != env_tid:
         raise _Reject(
             f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
@@ -189,7 +190,7 @@ def _worker_guard(tool_name: str, args: dict) -> str:
 def _require_orchestrator_tool(tool_name: str) -> None:
     """The check_fn already hides orchestrator tools from workers; this catches
     a stale registration or test harness routing a worker here anyway."""
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get(KANBAN_TASK_ENV):
         raise _Reject(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers must use "
             "kanban_complete, kanban_block, kanban_heartbeat, or kanban_comment for their "
@@ -420,7 +421,7 @@ def heartbeat_current_worker_from_env() -> bool:
     attempted. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
     heartbeated; ``HERMES_KANBAN_CLAIM_LOCK`` absent -> default claimer (local workers)."""
     global _auto_heartbeat_last_attempt
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    tid = os.environ.get(KANBAN_TASK_ENV)
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:
         return False
@@ -454,7 +455,7 @@ def inject_new_comments_from_env(agent: Any) -> bool:
     """Steer new operator comments on the worker's task into ``agent``; True iff a
     steer was injected; never raises. Own comments (``HERMES_PROFILE``) are skipped."""
     global _comment_poll_last_attempt
-    tid = os.environ.get("HERMES_KANBAN_TASK")
+    tid = os.environ.get(KANBAN_TASK_ENV)
     now = time.monotonic()
     if (not tid or agent is None or not hasattr(agent, "steer")
             or (now - _comment_poll_last_attempt) < _COMMENT_POLL_MIN_INTERVAL_SECONDS):
@@ -823,19 +824,20 @@ def _handle_create(args: dict, **kw) -> str:
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
-        # Resolve the session to wake on completion. Prefer the request-scoped
-        # api_server origin binding over HERMES_SESSION_ID: the env var is
-        # clobbered with a subagent's internal id whenever a child agent is
-        # constructed in-process, which would stamp — and later wake — the
-        # wrong session. In a dispatcher-spawned worker HERMES_SESSION_ID is
-        # the worker's own ephemeral session; child cards must wake the
-        # durable parent session stored on the worker's task row (#85575).
+        # Resolve the session to wake on completion. Explicit tool args win.
+        # For dispatcher workers, the durable parent session on the worker
+        # task wins over request-origin and process-global session bindings
+        # — HERMES_SESSION_ID is the worker's own ephemeral session, which
+        # no longer exists after the worker exits (#85575). Orchestrator/API
+        # callers then use the request origin before the legacy env fallback.
         from tools.async_delegation import _current_origin_session_id
-        session_id: Optional[str] = args.get("session_id") or _current_origin_session_id()
-        self_tid = os.environ.get("HERMES_KANBAN_TASK")
+        self_tid = os.environ.get(KANBAN_TASK_ENV)
         self_task = kb.get_task(conn, self_tid) if self_tid else None
-        if not session_id and self_task is not None and self_task.session_id:
+        session_id: Optional[str] = args.get("session_id")
+        if not session_id and self_task is not None:
             session_id = self_task.session_id
+        if not session_id:
+            session_id = _current_origin_session_id()
         if not session_id:
             session_id = os.environ.get("HERMES_SESSION_ID")
         if project_id is None and workspace_kind is None and workspace_path is None:
