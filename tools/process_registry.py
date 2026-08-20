@@ -31,6 +31,10 @@ from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
+from agent import redact as _redact_module
+from agent.redact import redact_sensitive_text
+from hermes_cli import lifecycle as _lifecycle
+from tools.ansi_strip import strip_ansi
 from tools.process_registry_notifications import format_process_notification
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
@@ -389,9 +393,7 @@ def transform_terminal_output(
         return output
 
     try:
-        from hermes_cli.lifecycle import invoke_hook
-
-        hook_results = invoke_hook(
+        hook_results = _lifecycle.invoke_hook(
             "transform_terminal_output",
             command=command,
             output=output,
@@ -407,6 +409,33 @@ def transform_terminal_output(
         # background process result unavailable.
         pass
     return output
+
+
+def render_process_output(
+    output: str,
+    *,
+    command: str = "",
+    returncode: Optional[int] = None,
+    task_id: str = "",
+    env_type: str = "",
+) -> str:
+    """Apply the shared background-output pipeline before delivery.
+
+    Every consumer receives the same raw input, then the hook runs before ANSI
+    stripping and terminal-output redaction. Keeping this sequence here avoids
+    gateway and process-tool paths drifting apart as new delivery surfaces are
+    added.
+    """
+    transformed = transform_terminal_output(
+        output,
+        command=command,
+        returncode=returncode,
+        task_id=task_id,
+        env_type=env_type,
+    )
+    return _redact_module.redact_terminal_output(
+        strip_ansi(transformed), command
+    )
 
 
 @dataclass
@@ -2144,15 +2173,15 @@ def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
     if not isinstance(result, dict):
         return result
     command = result.get("command") or ""
+    returncode = result.get("exit_code")
 
     # Match the foreground terminal path: transform raw output first, then
     # redact the final value. This prevents a hook replacement from injecting
     # an unmasked credential into the model-visible result.
-    returncode = result.get("exit_code")
     for field in ("output", "output_preview"):
         value = result.get(field)
         if isinstance(value, str) and value:
-            result[field] = transform_terminal_output(
+            result[field] = render_process_output(
                 value,
                 command=command,
                 returncode=returncode,
@@ -2160,12 +2189,6 @@ def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
                 env_type=result.get("env_type", ""),
             )
 
-    from agent.redact import redact_sensitive_text, redact_terminal_output
-
-    command = result.get("command") or ""
-    for key in ("output", "output_preview"):
-        if isinstance(value := result.get(key), str) and value:
-            result[key] = redact_terminal_output(value, command)
     if isinstance(command, str) and command:
         result["command"] = redact_sensitive_text(command, code_file=True)
     return result
