@@ -157,18 +157,13 @@ def spawn_background_process(
         # canonicalization seam. Apply the same fail-open hook contract to
         # its immediate model-visible response, while the process registry
         # handles subsequent command output from poll/wait/log/kill.
-        from tools.process_registry import transform_terminal_output
-        background_output = transform_terminal_output(
+        from tools.process_registry import render_process_output
+        result_data["output"] = render_process_output(
             result_data["output"],
             command=command,
             returncode=None,
             task_id=effective_task_id or "",
             env_type=env_type,
-        )
-        from tools.ansi_strip import strip_ansi
-        from agent.redact import redact_terminal_output
-        result_data["output"] = redact_terminal_output(
-            strip_ansi(background_output), command
         )
         if approval_note:
             result_data["approval"] = approval_note
