@@ -389,14 +389,14 @@ def _memory_provider_generic(name: str) -> None:
 def _check_memory_provider(should_fix: bool, f: Finding) -> None:
     from hermes_cli.doctor import HERMES_HOME
     raw_name = _doctor_memory_config(HERMES_HOME).get("provider", "")
-    # Align with runtime/dashboard: builtin/built-in/none → no external plugin.
+    # Same alias set as runtime / dashboard (plugins.memory.normalize_memory_provider_name).
+    # Without this, memory.provider: builtin falls through to load_memory_provider
+    # and prints a false "plugin not found" warning (#75647).
     try:
         from plugins.memory import normalize_memory_provider_name as _norm_mem_provider
         name = _norm_mem_provider(raw_name)
-    except Exception:
+    except ImportError:
         name = raw_name
-        if str(name).strip().lower() in {"built-in", "builtin", "none"}:
-            name = ""
     if not name:
         check_ok(
             "Built-in memory active",
