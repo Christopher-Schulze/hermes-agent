@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, registry, tool_error
+from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope, discover_builtin_tools, invalidate_check_fn_cache, registry, tool_error
 from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 from toolsets import resolve_toolset, validate_toolset
 from tools.arg_coercion import coerce_tool_args
@@ -191,7 +191,10 @@ _LEGACY_TOOLSET_MAP = {
 # non-quiet path prints). Hot callers (gateway runner, AIAgent.__init__) hit it
 # every turn; a miss costs ~7 ms of registry walk + check_fn probing. The key
 # includes registry._generation (bumped on register/deregister/alias) so
-# invalidation is transparent; check_fn drift is handled by registry.py's 30 s TTL.
+# invalidation is transparent; check_fn drift is handled by registry.py's 30 s
+# TTL. The key intentionally does not include environment state: callers that
+# reload environment files in a long-lived process, such as cron, must
+# explicitly call _clear_tool_defs_cache() after the reload.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 # FIFO cap: 8 covers a long-lived gateway's warm set of platform/toolset combos.
@@ -204,7 +207,17 @@ _TOOL_DEFS_CACHE_MAX = 8
 
 
 def _clear_tool_defs_cache() -> None:
-    """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode)."""
+    """Drop memoized results when a dynamic-schema dependency changes (discord caps, sandbox mode).
+
+    Also called by cron after every dotenv reload: this cache is process-global
+    rather than per-session, so invalidating a concurrent interactive or gateway
+    lookup is intentional — the next lookup recomputes both the availability
+    probes and the schema snapshot through their synchronized cache paths.
+    """
+    # Invalidate the underlying availability probes first, so any lookup that
+    # starts after this boundary re-probes dependencies before rebuilding its
+    # schema snapshot.
+    invalidate_check_fn_cache()
     with _tool_defs_cache_lock:
         _tool_defs_cache.clear()
 
