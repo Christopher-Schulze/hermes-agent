@@ -182,6 +182,11 @@ class GatewayAgentCacheMixin:
                     session_key, provider,
                 )
                 return
+            if not override.get("api_key"):
+                # Resolution succeeded without a credential: a keyless-but-valid provider
+                # (e.g. local Ollama). Mark it so the apply gates don't mistake it for a
+                # stale credential-less override.
+                override["keyless"] = True
         self._session_state(session_key).conversation.model_override = override
         logger.info(
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
@@ -197,10 +202,11 @@ class GatewayAgentCacheMixin:
             return model, runtime_kwargs
         model = override.get("model", model)
         # Only apply the provider/runtime keys if the override still carries a resolvable
-        # credential. A credential-less override (e.g. the provider was removed from config
+        # credential or was validated as keyless-but-legitimate (e.g. local Ollama resolves
+        # api_key=''). A credential-less override (e.g. the provider was removed from config
         # after the switch) would otherwise poison runtime_kwargs with a stale provider and
         # produce an "UNKNOWN <provider>" failure downstream.
-        if override.get("api_key"):
+        if override.get("api_key") or override.get("keyless"):
             for key in _OVERRIDE_APPLY_KEYS:
                 val = override.get(key)
                 if val is not None:
