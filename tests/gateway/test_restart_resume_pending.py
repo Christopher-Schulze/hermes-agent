@@ -1809,7 +1809,8 @@ class TestStuckLoopEscalation:
         assert second.session_id != entry.session_id
         assert second.auto_reset_reason == "suspended"
 
-    def test_successful_turn_flow_clears_both_counter_and_resume_pending(
+    @pytest.mark.asyncio
+    async def test_successful_turn_flow_clears_both_counter_and_resume_pending(
         self, tmp_path, monkeypatch
     ):
         """The gateway's post-turn cleanup should clear both signals so a
@@ -1830,7 +1831,7 @@ class TestStuckLoopEscalation:
         runner = object.__new__(GatewayRunner)
         runner.session_store = store
 
-        GatewayRunner._clear_restart_failure_count(runner, entry.session_key)
+        await GatewayRunner._clear_restart_failure_count(runner, entry.session_key)
         store.clear_resume_pending(entry.session_key)
 
         assert store._entries[entry.session_key].resume_pending is False
@@ -1863,7 +1864,8 @@ class TestStuckLoopEscalation:
             )
         ]
 
-    def test_clear_restart_failure_count_uses_atomic_json_write_when_entries_remain(
+    @pytest.mark.asyncio
+    async def test_clear_restart_failure_count_uses_atomic_json_write_when_entries_remain(
         self, tmp_path, monkeypatch
     ):
         import json
@@ -1888,7 +1890,7 @@ class TestStuckLoopEscalation:
         monkeypatch.setattr("gateway.run.atomic_json_write", _fake_atomic_json_write)
 
         runner = object.__new__(GatewayRunner)
-        runner._clear_restart_failure_count(session_key)
+        await runner._clear_restart_failure_count(session_key)
 
         assert calls == [
             (
