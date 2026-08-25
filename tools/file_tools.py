@@ -15,7 +15,8 @@ import re
 import stat
 import threading
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from agent.file_safety import get_read_block_error
@@ -41,6 +42,17 @@ logger = logging.getLogger(__name__)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
+_programmatic_read = ContextVar("programmatic_read", default=False)
+
+
+@contextmanager
+def programmatic_read_context():
+    """Select stable raw read results for one standard dispatcher call."""
+    token = _programmatic_read.set(True)
+    try:
+        yield
+    finally:
+        _programmatic_read.reset(token)
 
 # Read-size guard. Model-agnostic, so characters proxy tokens: 100K chars is
 # ~25-35K tokens across typical tokenisers. Configurable: file_read_max_chars.
@@ -449,7 +461,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
     result_dict = {
-        "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
+        "content": (file_ops._add_line_numbers(page_text, offset) if page_text and line_numbers else page_text),
         "total_lines": total_lines,
         "file_size": binary.file_size,
         "truncated": total_lines > end_line,
@@ -537,7 +549,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", *, line_numbers: bool = True, deduplicate: bool = True) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: device-path blocklist (no I/O) → stat-based special-file
@@ -599,7 +611,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
-        if cached_mtime is not None:
+        if deduplicate and cached_mtime is not None:
             try:
                 if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
                     return _dedup_stub_or_block(task_data, dedup_key, path)
@@ -607,6 +619,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 pass  # stat failed — fall through to full read
 
         result = _get_file_ops(task_id).read_file(path, offset, limit)
+        if result.content and not line_numbers:
+            result.content = _strip_read_file_gutter(result.content, offset)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:
@@ -635,8 +649,9 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "Consider reading only the section you need with offset and limit "
                 "to keep context usage efficient."))
 
-        count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
+        count = (_record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")))
+                 if deduplicate else 0)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -652,6 +667,41 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def _strip_read_file_gutter(content: str, start_line: int) -> str:
+    """Remove the display-only ``LINE|`` prefix added by ``read_file``."""
+    raw_lines = []
+    for line_number, line in enumerate(content.split("\n"), start=start_line):
+        prefix = f"{line_number}|"
+        raw_lines.append(line[len(prefix):] if line.startswith(prefix) else line)
+    return "\n".join(raw_lines)
+
+
+def read_file_programmatic_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = DEFAULT_READ_LIMIT,
+    task_id: str = "default",
+) -> str:
+    """Return stable raw ``read_file`` data for execute_code RPC callers."""
+    result = read_file_tool(
+        path=path,
+        offset=offset,
+        limit=limit,
+        task_id=task_id,
+        line_numbers=False,
+        deduplicate=False,
+    )
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return tool_error("read_file returned an invalid programmatic result")
+    if not isinstance(payload, dict):
+        return tool_error("read_file returned an invalid programmatic result")
+    payload.pop("_warning", None)
+    payload.pop("_hint", None)
+    return json.dumps(payload, ensure_ascii=False)
 
 
 # ── Shared write/patch plumbing ──────────────────────────────────────────
