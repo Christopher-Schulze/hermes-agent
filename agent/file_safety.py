@@ -294,6 +294,22 @@ def is_write_approval_required(path: str) -> bool:
     return resolved in build_write_approval_paths(home)
 
 
+def is_shell_rc_path(path: str) -> bool:
+    """Return True if ``path`` is a login shell startup file.
+
+    The approval-gated set is the union of ``~/.ssh/config`` and the shell
+    startup inventory from ``build_shell_rc_approval_paths``. The two
+    classes carry different execution risks (SSH ``ProxyCommand`` /
+    ``Match exec`` versus login-time sourcing) and callers gate them with
+    independent approval keys so a session approval given for one class
+    cannot silently authorize the other. This predicate lets the caller
+    select the right key without re-resolving the inventory.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    return resolved in build_shell_rc_approval_paths(home)
+
+
 # Common secret-bearing project-local environment file basenames.
 # These are blocked because .env files routinely contain API keys,
 # database passwords, and other credentials.
