@@ -316,11 +316,11 @@ def _remove_tree(path: Path, *, boundary: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _reject(path: Path, boundary: Path, msg: str, *args) -> None:
-    """Log a rejected candidate and clean up its tree; always returns ``None``."""
+def _reject(path: Path, boundary: Path, msg: str, *args, detail: str = "") -> tuple[Path | None, str]:
+    """Log a rejected candidate and clean up its tree; returns ``(None, detail)``."""
     logger.warning(msg, *args)
     _remove_tree(path, boundary=boundary)
-    return None
+    return None, detail
 
 
 def _token() -> str:
@@ -563,7 +563,13 @@ def _smoke_candidate_venv(venv_dir: Path) -> tuple[bool, str, SQLiteRuntimeInfo 
 
 
 def _stage_candidate_venv(
-    uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> Path | None:
+    uv_bin: str, *, project_root: Path, generation: Path, python: Path) -> tuple[Path | None, str]:
+    """Build a relocatable candidate venv and smoke-test it.
+
+    Returns ``(path, "")`` on success, or ``(None, detail)`` on failure so
+    callers can distinguish dependency-sync failures from import smoke
+    failures (#75655).
+    """
     runtime_root = project_root / _RUNTIME_DIR_NAME
     candidate = runtime_root / f"venv-candidate-{_token()}"
     env = managed_python_env(project_root, install_dir=generation)
@@ -581,9 +587,11 @@ def _stage_candidate_venv(
     if created.returncode != 0:
         return reject(
             "candidate venv creation failed (rc=%d): %s",
-            created.returncode, (created.stderr or created.stdout or "").strip())
+            created.returncode, (created.stderr or created.stdout or "").strip(),
+            detail="replacement environment venv creation failed")
     if not (project_root / "uv.lock").is_file():
-        return reject("candidate dependency sync refused: uv.lock is missing")
+        return reject("candidate dependency sync refused: uv.lock is missing",
+                      detail="replacement environment dependency sync refused: uv.lock is missing")
     # Locked sync must see project [tool.uv] exclude-newer; --no-config / UV_NO_CONFIG drops it
     # and uv 0.12+ refuses --locked.
     sync_env = dict(env)
@@ -601,11 +609,16 @@ def _stage_candidate_venv(
         [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
         cwd=project_root, env=sync_env, stderr=subprocess.STDOUT, check=False)
     if synced.returncode != 0:
-        return reject("candidate dependency sync failed (rc=%d)", synced.returncode)
+        return reject("candidate dependency sync failed (rc=%d)", synced.returncode,
+                      detail="replacement environment dependency sync failed (uv sync --locked)")
     healthy, detail, _ = _smoke_candidate_venv(candidate)
     if not healthy:
-        return reject("candidate venv smoke failed: %s", detail)
-    return candidate
+        return reject(
+            "candidate venv smoke failed: %s", detail,
+            detail="replacement environment did not pass dependency and import smoke tests"
+            + (f": {detail}" if detail else ""),
+        )
+    return candidate, ""
 
 
 def _rename_with_retry(source: Path, destination: Path) -> None:
@@ -910,13 +923,14 @@ def _repair_under_lock(
         return _result("failed", current, "could not provision a fixed private Python runtime")
     generation, python, candidate_info = provisioned
 
-    candidate = _stage_candidate_venv(
+    candidate, stage_detail = _stage_candidate_venv(
         uv_bin, project_root=root, generation=generation, python=python)
     if candidate is None:
         _remove_tree(generation, boundary=managed_python_install_dir(root))
         return _result(
             "failed", current,
-            "replacement environment did not pass dependency and import smoke tests",
+            stage_detail
+            or "replacement environment did not pass dependency and import smoke tests",
             sqlite_after=candidate_info.sqlite_version_string)
 
     cut_over, backup, final_info, cutover_detail = _cut_over_candidate(
