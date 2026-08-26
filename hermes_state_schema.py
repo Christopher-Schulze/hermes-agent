@@ -383,20 +383,30 @@ class SessionSchemaMixin:
         """True when *exc* is the corrupt-inline-index class that justifies a
         drop-and-recreate rebuild, rather than a transient lock/busy/IO error.
 
-        Class-based split (replaces the earlier message-string classifier,
-        adopted from #86183's review round): corruption — ``SQLITE_CORRUPT``
-        and the FTS5 corrupt-structure class — surfaces as plain
-        ``sqlite3.DatabaseError``, never ``OperationalError``, while
-        ``database is locked`` / ``database is busy`` / disk-IO / readonly
-        surface as ``sqlite3.OperationalError`` (a subclass). An isinstance
-        check therefore classifies both directions with no dependence on
-        SQLite's error wording; verified against a really-corrupt index,
-        which also produced a ``fts5: corrupt structure record`` DELETE
-        failure that the previous string list missed, and a real
-        ``database is locked``.
+        Prefer SQLite's primary result code: FTS5 corruption reports
+        ``SQLITE_CORRUPT`` (including extended codes such as
+        ``SQLITE_CORRUPT_VTAB``), while lock/busy/disk-IO/readonly use
+        distinct result codes. Python added ``sqlite_errorcode`` in 3.11;
+        retain a narrow message fallback for synthetic exceptions and older
+        runtimes, including the ``fts5: corrupt structure record`` wording
+        observed during the #86183 review round.
         """
-        return isinstance(exc, sqlite3.DatabaseError) and not isinstance(
+        if not isinstance(exc, sqlite3.DatabaseError) or isinstance(
             exc, sqlite3.OperationalError
+        ):
+            return False
+        error_code = getattr(exc, "sqlite_errorcode", None)
+        if isinstance(error_code, int):
+            return error_code & 0xFF == sqlite3.SQLITE_CORRUPT
+        message = str(exc).lower()
+        return any(
+            marker in message
+            for marker in (
+                "malformed inverted index",
+                "database disk image is malformed",
+                "malformed database schema",
+                "fts5: corrupt structure record",
+            )
         )
 
     _FTS_INTEGRITY_ENGINE_KEY = "fts_integrity_engine"

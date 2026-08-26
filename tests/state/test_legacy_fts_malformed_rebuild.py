@@ -150,14 +150,19 @@ class TestLegacyFtsMalformedRebuild:
         locked = sqlite3.OperationalError("database is locked")
         busy = sqlite3.OperationalError("database is busy")
         io_error = sqlite3.OperationalError("disk I/O error")
+        integrity = sqlite3.IntegrityError("constraint failed")
+        programming = sqlite3.ProgrammingError("unsupported operation")
+        unrelated = sqlite3.DatabaseError("unrelated database failure")
         malformed = sqlite3.DatabaseError(
             "malformed inverted index for FTS5 table main.messages_fts_trigram"
         )
         disk_image = sqlite3.DatabaseError("database disk image is malformed")
+        corrupt_code = sqlite3.DatabaseError("localized corruption wording")
+        corrupt_code.sqlite_errorcode = sqlite3.SQLITE_CORRUPT_VTAB
 
-        for exc in (locked, busy, io_error):
+        for exc in (locked, busy, io_error, integrity, programming, unrelated):
             assert SessionDB._is_malformed_fts_index_error(exc) is False
-        for exc in (malformed, disk_image):
+        for exc in (malformed, disk_image, corrupt_code):
             assert SessionDB._is_malformed_fts_index_error(exc) is True
 
     def test_corrupt_structure_record_variant_classified_as_corruption(self):
@@ -169,7 +174,7 @@ class TestLegacyFtsMalformedRebuild:
         variant = sqlite3.DatabaseError("fts5: corrupt structure record")
         assert SessionDB._is_malformed_fts_index_error(variant) is True
 
-    def test_failed_fallback_leaves_stale_breadcrumb(self, tmp_path):
+    def test_failed_fallback_leaves_stale_breadcrumb(self, tmp_path, monkeypatch):
         """When the drop/recreate recovery itself cannot complete, the open
         must not fail and must not leave a silently-empty index: it persists
         the fts_stale breadcrumb, detaches FTS (triggers down, same ordering
@@ -198,7 +203,7 @@ class TestLegacyFtsMalformedRebuild:
             finally:
                 hermes_state_schema.LEGACY_FTS_SQL = original_ddl
 
-        SessionDB._rebuild_fts_indexes = _flaky_rebuild
+        monkeypatch.setattr(SessionDB, "_rebuild_fts_indexes", _flaky_rebuild)
         db = SessionDB(db_path=db_path)
         try:
             breadcrumb = db._conn.execute(
@@ -214,7 +219,6 @@ class TestLegacyFtsMalformedRebuild:
             assert trigger_count == 0, "triggers must be down over an unrebuilt gap"
         finally:
             db.close()
-            SessionDB._rebuild_fts_indexes = original_rebuild
 
         # With the recovery DDL restored, the next open performs the full
         # recovery and clears the breadcrumb.
