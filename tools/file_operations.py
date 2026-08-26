@@ -97,8 +97,15 @@ class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
 
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
-        """Read a file with pagination support."""
+    def read_file(
+        self,
+        path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        *,
+        line_numbers: bool = True,
+    ) -> ReadResult:
+        """Read a file with pagination; ``line_numbers=False`` skips the gutter."""
 
     @abstractmethod
     def read_file_raw(self, path: str) -> ReadResult:
@@ -558,7 +565,28 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             content=self._add_line_numbers(content, offset), total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
 
-    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
+    def _clamp_read_file_lines(self, content: str) -> str:
+        """Apply the same per-line truncation as ``_add_line_numbers`` but
+        without the ``LINE|`` gutter — used by ``read_file(line_numbers=False)``
+        so both construction paths produce identical raw content.
+        """
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        return "\n".join(
+            line[:max_line_length] + "... [truncated]"
+            if len(line) > max_line_length
+            else line
+            for line in content.split("\n")
+        )
+
+    def read_file(
+        self,
+        path: str,
+        offset: int = 1,
+        limit: int = 2000,
+        *,
+        line_numbers: bool = True,
+    ) -> ReadResult:
         """Read a file with pagination, binary detection, and line numbers.
 
         ``offset`` is 1-indexed; ``limit`` is clamped by ``normalize_read_pagination``.
@@ -892,7 +920,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     f"({total_lines} lines total). Retry with offset <= "
                     f"{total_lines}."))
         return ReadResult(
-            content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
+            content=(
+                self._add_line_numbers(read_output, offset)
+                if line_numbers
+                else self._clamp_read_file_lines(read_output)
+            ),
+            total_lines=total_lines,
             file_size=file_size, truncated=truncated, hint=hint)
 
     # Confusable characters seen in real filenames, collapsed after NFC.

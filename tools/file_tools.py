@@ -618,9 +618,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             except OSError:
                 pass  # stat failed — fall through to full read
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit)
-        if result.content and not line_numbers:
-            result.content = _strip_read_file_gutter(result.content, offset)
+        result = _get_file_ops(task_id).read_file(path, offset, limit, line_numbers=line_numbers)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:
@@ -667,15 +665,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
-
-
-def _strip_read_file_gutter(content: str, start_line: int) -> str:
-    """Remove the display-only ``LINE|`` prefix added by ``read_file``."""
-    raw_lines = []
-    for line_number, line in enumerate(content.split("\n"), start=start_line):
-        prefix = f"{line_number}|"
-        raw_lines.append(line[len(prefix):] if line.startswith(prefix) else line)
-    return "\n".join(raw_lines)
 
 
 def read_file_programmatic_tool(
