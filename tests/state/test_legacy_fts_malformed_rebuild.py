@@ -159,3 +159,102 @@ class TestLegacyFtsMalformedRebuild:
             assert SessionDB._is_malformed_fts_index_error(exc) is False
         for exc in (malformed, disk_image):
             assert SessionDB._is_malformed_fts_index_error(exc) is True
+
+    def test_corrupt_structure_record_variant_classified_as_corruption(self):
+        """A really-corrupt index can fail with 'fts5: corrupt structure
+        record', which none of the historical message-string markers matched.
+        The class-based split must classify it as corruption (verified against
+        a live corrupt index during the #86183 review round); the previous
+        string classifier would have re-raised it on every open instead."""
+        variant = sqlite3.DatabaseError("fts5: corrupt structure record")
+        assert SessionDB._is_malformed_fts_index_error(variant) is True
+
+    def test_failed_fallback_leaves_stale_breadcrumb(self, tmp_path):
+        """When the drop/recreate recovery itself cannot complete, the open
+        must not fail and must not leave a silently-empty index: it persists
+        the fts_stale breadcrumb, detaches FTS (triggers down, same ordering
+        contract as the deferred rebuild branch), and the next open routes
+        through _recover_stale_fts for the full recovery."""
+        db_path = tmp_path / "state.db"
+        _create_legacy_db(db_path)
+        _corrupt_base_fts(db_path)
+
+        # Make only the recovery script fail mid-flight: patch the DDL for
+        # the duration of the rebuild call (not the earlier _ensure_fts_schema
+        # pass), appending a statement after the CREATE that references a
+        # nonexistent table. The rollback in the failure path then undoes the
+        # script's DROP/CREATE.
+        import hermes_state_schema
+
+        original_rebuild = SessionDB._rebuild_fts_indexes
+        original_ddl = hermes_state_schema.LEGACY_FTS_SQL
+
+        def _flaky_rebuild(self, cursor, *, legacy=False, include_trigram=True):
+            hermes_state_schema.LEGACY_FTS_SQL = (
+                original_ddl + "\nINSERT INTO no_such_recovery_table VALUES (1);"
+            )
+            try:
+                return original_rebuild(self, cursor, legacy=legacy, include_trigram=include_trigram)
+            finally:
+                hermes_state_schema.LEGACY_FTS_SQL = original_ddl
+
+        SessionDB._rebuild_fts_indexes = _flaky_rebuild
+        db = SessionDB(db_path=db_path)
+        try:
+            breadcrumb = db._conn.execute(
+                "SELECT value FROM state_meta WHERE key = 'fts_stale'"
+            ).fetchone()
+            assert breadcrumb is not None, "fts_stale breadcrumb must persist"
+            assert db._fts_stale is True
+            assert db._fts_enabled is False
+            trigger_count = db._conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+                "AND name LIKE 'messages_ai%'"
+            ).fetchone()[0]
+            assert trigger_count == 0, "triggers must be down over an unrebuilt gap"
+        finally:
+            db.close()
+            SessionDB._rebuild_fts_indexes = original_rebuild
+
+        # With the recovery DDL restored, the next open performs the full
+        # recovery and clears the breadcrumb.
+        db2 = SessionDB(db_path=db_path)
+        try:
+            assert db2._fts_enabled is True
+            breadcrumb = db2._conn.execute(
+                "SELECT value FROM state_meta WHERE key = 'fts_stale'"
+            ).fetchone()
+            assert breadcrumb is None, "breadcrumb must clear after recovery"
+            matches = db2._conn.execute(
+                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'keyword'"
+            ).fetchone()[0]
+            assert matches == 10
+        finally:
+            db2.close()
+
+    def test_engine_stamp_includes_capability_signature(self, tmp_path, monkeypatch):
+        """The engine stamp is an engine+capability pair: a host whose probes
+        return None (e.g. missing tokenizer extensions) appends
+        |missing=<tables>, so a later capable host sees a signature mismatch
+        and re-runs its own sweep instead of trusting the incapable host's
+        stamp (#86183)."""
+        db_path = tmp_path / "state.db"
+        _create_legacy_db(db_path)
+        db = SessionDB(db_path=db_path)
+        try:
+            original = SessionDB._fts_table_probe
+
+            def _incapable(self, cursor, table_name):
+                if table_name in ("messages_fts_trigram", "messages_fts_cjk"):
+                    return None
+                return original(self, cursor, table_name)
+
+            monkeypatch.setattr(SessionDB, "_fts_table_probe", _incapable)
+            cursor = db._conn.cursor()
+            stamp = db._fts_integrity_engine_id(cursor)
+            assert stamp.startswith("fts5:")
+            assert stamp.endswith(
+                "|missing=messages_fts_cjk,messages_fts_trigram"
+            ), stamp
+        finally:
+            db.close()
