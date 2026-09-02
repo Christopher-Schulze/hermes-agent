@@ -1257,10 +1257,17 @@ def _run_no_agent_job(
     """
     # Load .env first so auto-delivery can resolve *_HOME_CHANNEL: the agent path's per-run dotenv
     # reload never runs for no_agent jobs. Does not override existing values.
+    # Under an active profile multiplexer the reload must be skipped:
+    # it would push the firing profile's .env values into the shared
+    # process-global os.environ, where every OTHER profile's subprocesses
+    # would inherit them after this fire. The firing profile's secrets
+    # are already authoritative through the secret scope (#87575).
     try:
+        from agent.secret_scope import is_multiplex_active
         from hermes_cli.env_loader import load_hermes_dotenv
 
-        load_hermes_dotenv(hermes_home=_get_hermes_home())
+        if not is_multiplex_active():
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
     except Exception:
         logger.debug("Job '%s': no_agent .env reload failed", job_id, exc_info=True)
 
@@ -2173,11 +2180,18 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     """Re-read .env for this run and publish the auto-deliver target into the session ContextVars."""
     # Reset the secret-source cache FIRST or a Bitwarden/BSM-backed secret is never re-resolved
     # (only the placeholder reloads -> 401s).
+    # Under an active profile multiplexer this reload is skipped: the
+    # firing profile's .env must never leak into the shared process-global
+    # os.environ, where other profiles' subprocesses would inherit it.
+    # The secret scope installed for this fire already makes the firing
+    # profile's secrets authoritative (#87575).
+    from agent.secret_scope import is_multiplex_active
     from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
     from gateway.session_context import _VAR_MAP
 
     reset_secret_source_cache()
-    load_hermes_dotenv(hermes_home=_get_hermes_home())
+    if not is_multiplex_active():
+        load_hermes_dotenv(hermes_home=_get_hermes_home())
 
     delivery_target = _resolve_delivery_target(job)
     if delivery_target:
