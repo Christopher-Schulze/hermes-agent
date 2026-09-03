@@ -1171,7 +1171,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform not in _MAX_LENGTHS:
         try:
             from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(platform.value)
+            entry = platform_registry.get(getattr(platform, "value", platform))
             if entry and entry.max_message_length > 0:
                 _MAX_LENGTHS[platform] = entry.max_message_length
         except Exception:
@@ -1468,7 +1468,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # --- Non-media platforms ---
     # Buzz is a plugin platform with verified native media delivery through
     # _send_via_adapter below, including valid media-only sends.
-    if media_files and not message.strip() and platform.value != "buzz":
+    _platform_value = getattr(platform, "value", platform)
+    if media_files and not message.strip() and _platform_value != "buzz":
         return {
             "error": (
                 f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack; "
@@ -1476,7 +1477,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             )
         }
     warning = None
-    if media_files and platform.value != "buzz":
+    if media_files and _platform_value != "buzz":
         warning = (
             f"MEDIA attachments were omitted for {platform_name}; "
             "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
