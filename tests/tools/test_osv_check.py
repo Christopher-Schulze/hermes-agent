@@ -366,6 +366,20 @@ class TestParsePackageFromArgsEdgeCases:
 
 
 class TestCheckPackageForMalwareEdgeCases:
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self, tmp_path, monkeypatch):
+        from tools import osv_check
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with osv_check._cache_lock:
+            osv_check._cache.clear()
+            osv_check._disk_cache_loaded = False
+        (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
+        yield
+        with osv_check._cache_lock:
+            osv_check._cache.clear()
+            osv_check._disk_cache_loaded = False
+        (tmp_path / "cache" / "osv_check.json").unlink(missing_ok=True)
+
     def test_unparseable_package_returns_none(self):
         """When package can't be parsed, returns None (allow)."""
         result = check_package_for_malware("npx", [])
