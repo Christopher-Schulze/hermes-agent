@@ -3996,10 +3996,6 @@ def _run_browser_command(
     except Exception as e:
         logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
         return {"success": False, "error": f"Failed to create browser session: {str(e)}"}
-    # Cleanup stops the supervisor before closing the backend; keep it stopped.
-    if command != "close" and session_info.get("cdp_url"):
-        _ensure_cdp_supervisor(task_id)
-
     # Build the command with the appropriate backend flag.
     # Cloud mode: --cdp <websocket_url> connects to Browserbase.
     # Local mode: --session <name> launches a local headless Chromium.
@@ -4012,7 +4008,10 @@ def _run_browser_command(
         # target/session flag, so bind page operations through its stable tab
         # state in one batch request.  Older/proxy backends that cannot expose
         # Target.getTargets use the serialized activation fallback below.
-        _ensure_cdp_supervisor(task_id)
+        # Cleanup stops the supervisor before closing the backend; keep it
+        # stopped — skip re-ensuring on ``close`` so we don't revive it.
+        if command != "close":
+            _ensure_cdp_supervisor(task_id)
         _bind_session_page_target(task_id, session_info)
         if command in _CDP_PAGE_BOUND_COMMANDS:
             cdp_tab_ref = _session_page_tab_ref(task_id, session_info)
