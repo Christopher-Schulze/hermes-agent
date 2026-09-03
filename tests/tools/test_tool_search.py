@@ -415,7 +415,7 @@ class TestBridgeDispatch:
     def test_resolve_underlying_call_tolerates_extra_trailing_json(self, monkeypatch):
         """A second JSON value after the first object must not break parsing."""
         from tools.tool_search import resolve_underlying_call
-        monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda _name: True)
+        monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda _name, _tools: True)
         name, args, err = resolve_underlying_call({
             "name": "some_mcp_tool",
             "arguments": '{"foo": "bar"} {"baz": 2}',
@@ -427,7 +427,7 @@ class TestBridgeDispatch:
     def test_resolve_underlying_call_tolerates_long_args_with_trailing_noise(self, monkeypatch):
         """Long argument strings (>120 chars) followed by prose must parse."""
         from tools.tool_search import resolve_underlying_call
-        monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda _name: True)
+        monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda _name, _tools: True)
         long_value = "x" * 200
         raw = json.dumps({"query": long_value}) + " Is this enough context?"
         name, args, err = resolve_underlying_call({
