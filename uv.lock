@@ -36,6 +36,7 @@ defusedxml = false
 ruff = false
 exa-py = false
 mcp = false
+orjson = false
 python-olm = false
 wheel = false
 websockets = false
