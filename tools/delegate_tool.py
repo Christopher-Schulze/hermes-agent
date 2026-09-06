@@ -492,10 +492,16 @@ def delegate_task(
     if budget_error:
         return tool_error(budget_error)
 
-    children, err = _build_children(
-        task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
-        routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
-    )
+    try:
+        children, err = _build_children(
+            task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
+            routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers,
+        )
+    except Exception:
+        # No child is dispatched until the complete construction loop succeeds.
+        # Roll back the whole reservation even when earlier children built.
+        _release_session_children_budget(parent_agent, n_tasks)
+        raise
     if err:
         _release_session_children_budget(parent_agent, n_tasks)
         return tool_error(err)
