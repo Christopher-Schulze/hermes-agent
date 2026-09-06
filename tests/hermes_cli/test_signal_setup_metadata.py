@@ -2,7 +2,9 @@
 
 import shutil
 
-from hermes_cli import gateway, web_server
+from hermes_cli import gateway
+from hermes_cli.web_routers.messaging import _messaging_env_info
+from hermes_cli.web_server_messaging import _build_catalog_entry
 
 
 def test_signal_setup_recommends_only_native_http_daemon(monkeypatch, capsys):
@@ -23,9 +25,9 @@ def test_signal_setup_recommends_only_native_http_daemon(monkeypatch, capsys):
 
 
 def test_signal_dashboard_metadata_describes_native_http_daemon():
-    signal = web_server._build_catalog_entry("signal")
-    http_url = web_server._messaging_env_info("SIGNAL_HTTP_URL")
-    account = web_server._messaging_env_info("SIGNAL_ACCOUNT")
+    signal = _build_catalog_entry("signal")
+    http_url = _messaging_env_info("SIGNAL_HTTP_URL")
+    account = _messaging_env_info("SIGNAL_ACCOUNT")
 
     assert signal["description"] == "Connect through the native signal-cli HTTP daemon."
     assert signal["docs_url"] == (
