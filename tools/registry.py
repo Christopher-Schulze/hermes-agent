@@ -817,10 +817,12 @@ class ToolRegistry:
         # Project arguments against the tool's registered schema at the final
         # dispatch boundary. Middleware and hooks can still rewrite args above
         # this point; hidden control-plane parameters (e.g. terminal's ``force``)
-        # are stripped just before the handler receives them.
+        # are stripped just before the handler receives them.  The schema is
+        # taken from the already scope-resolved entry so projection always
+        # matches the handler that will execute.
         from model_tools import project_tool_args
 
-        args = project_tool_args(name, args)
+        args = project_tool_args(name, args, schema=entry.schema)
         try:
             if entry.is_async:
                 from model_tools import _run_async
