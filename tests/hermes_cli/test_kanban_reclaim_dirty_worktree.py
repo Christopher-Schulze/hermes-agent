@@ -18,6 +18,7 @@ import pytest
 
 from hermes_cli import kanban as kb_cli
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_connect import connect as _kb_connect
 
 needs_git = pytest.mark.skipif(
     shutil.which("git") is None, reason="git binary required"
@@ -74,11 +75,11 @@ def _reclaim_ns(task_id, *, force=False):
 @needs_git
 def test_reclaim_clean_worktree_succeeds(kanban_home, tmp_path, capsys):
     tree = _make_repo(tmp_path / "tree-clean")
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         tid = _running_task_with_worktree(conn, tree)
     rc = kb_cli._cmd_reclaim(_reclaim_ns(tid))
     assert rc == 0
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         assert kb.get_task(conn, tid).status != "running"
 
 
@@ -89,14 +90,14 @@ def test_reclaim_dirty_worktree_refuses_and_keeps_claim(
     tree = _make_repo(tmp_path / "tree-dirty")
     (tree / "wip.txt").write_text("uncommitted fix\n", encoding="utf-8")
     (tree / "base.txt").write_text("base\nmodified\n", encoding="utf-8")
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         tid = _running_task_with_worktree(conn, tree)
     rc = kb_cli._cmd_reclaim(_reclaim_ns(tid))
     assert rc == 1
     err = capsys.readouterr().err
     assert "wip.txt" in err
     assert "--force" in err
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         task = kb.get_task(conn, tid)
         assert task.status == "running"
         assert task.claim_lock is not None
@@ -106,17 +107,17 @@ def test_reclaim_dirty_worktree_refuses_and_keeps_claim(
 def test_reclaim_dirty_worktree_force_overrides(kanban_home, tmp_path, capsys):
     tree = _make_repo(tmp_path / "tree-force")
     (tree / "wip.txt").write_text("uncommitted fix\n", encoding="utf-8")
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         tid = _running_task_with_worktree(conn, tree)
     rc = kb_cli._cmd_reclaim(_reclaim_ns(tid, force=True))
     assert rc == 0
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         assert kb.get_task(conn, tid).status != "running"
 
 
 @needs_git
 def test_reclaim_scratch_task_skips_guard(kanban_home, capsys):
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         tid = kb.create_task(conn, title="scratch", assignee="w")
         kb.claim_task(conn, tid, claimer="test-host:worker")
     rc = kb_cli._cmd_reclaim(_reclaim_ns(tid))
@@ -125,7 +126,7 @@ def test_reclaim_scratch_task_skips_guard(kanban_home, capsys):
 
 @needs_git
 def test_reclaim_missing_worktree_path_fails_clean(kanban_home, tmp_path, capsys):
-    with kb.connect() as conn:
+    with _kb_connect() as conn:
         tid = kb.create_task(conn, title="ghost", assignee="w")
         conn.execute(
             "UPDATE tasks SET workspace_kind='worktree', workspace_path=? WHERE id=?",
