@@ -307,6 +307,9 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(monkeypat
     from unittest.mock import MagicMock, mock_open
 
     import tools.browser_tool as browser_tool
+    import tools.browser_tool_session as _session
+    import tools.browser_tool_cdp as _cdp
+    import tools.browser_tool_cloud as _cloud
 
     session = {
         "session_name": "cdp-task",
@@ -321,32 +324,31 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(monkeypat
         {"command": ["click", "@e1"], "success": True, "result": {"clicked": "@e1"}},
     ])
 
-    def capture_popen(command, **kwargs):
-        captured.append(command)
+    def capture_popen(cmd_parts, browser_env, task_socket_dir, command):
+        captured.append(cmd_parts)
         return process
 
-    monkeypatch.setattr(browser_tool, "_get_session_info", lambda _task_id: session)
-    monkeypatch.setattr(browser_tool, "_find_agent_browser", lambda: "/usr/bin/agent-browser")
-    monkeypatch.setattr(browser_tool, "_ensure_cdp_supervisor", lambda _task_id: None)
-    monkeypatch.setattr(browser_tool, "_bind_session_page_target", lambda _task_id, _session: None)
-    monkeypatch.setattr(browser_tool, "_session_page_tab_ref", lambda _task_id, _session: "t2")
-    monkeypatch.setattr(browser_tool, "_get_browser_engine", lambda: "auto")
-    monkeypatch.setattr(browser_tool, "_socket_safe_tmpdir", lambda: str(tmp_path))
-    monkeypatch.setattr(browser_tool, "_build_browser_env", lambda: {})
-    monkeypatch.setattr(browser_tool, "_write_owner_pid", lambda *_args: None)
-    monkeypatch.setattr(browser_tool, "_needs_chromium_sandbox_bypass", lambda: False)
+    monkeypatch.setattr(_session, "_get_session_info", lambda _task_id: session)
+    monkeypatch.setattr(_session, "_agent_browser_argv", lambda cmd: [cmd])
+    monkeypatch.setattr(_session, "_browser_command_preflight", lambda: {"browser_cmd": "/usr/bin/agent-browser"})
+    monkeypatch.setattr(_cdp, "_ensure_cdp_supervisor", lambda _task_id: None)
+    monkeypatch.setattr(_session, "_bind_session_page_target", lambda _task_id, _info: None)
+    monkeypatch.setattr(_session, "_session_page_tab_ref", lambda _task_id, _info: "t2")
+    monkeypatch.setattr(_session, "_agent_browser_command_env", lambda _dir: {})
+    monkeypatch.setattr(_session, "_prepare_session_socket_dir", lambda _name: str(tmp_path))
+    monkeypatch.setattr(_session, "_popen_agent_browser", capture_popen)
+    monkeypatch.setattr(_session, "_read_command_output_files", lambda *_args: (stdout, ""))
+    monkeypatch.setattr(_session, "_unlink_command_output_files", lambda *_args: None)
+    monkeypatch.setattr(_session, "_apply_chromium_sandbox_args", lambda _env: None)
+    monkeypatch.setattr(_session, "_handle_browser_command_timeout", lambda *_args: None)
+    import tools.browser_tool_cloud as _cloud
+    monkeypatch.setattr(_cloud, "_get_browser_engine", lambda: "auto")
     monkeypatch.setattr(browser_tool, "_safe_command_timeout", lambda: 10)
-    monkeypatch.setattr(browser_tool.subprocess, "Popen", capture_popen)
-    monkeypatch.setattr(browser_tool.os, "open", lambda *_args, **_kwargs: 1)
-    monkeypatch.setattr(browser_tool.os, "close", lambda *_args: None)
-    monkeypatch.setattr(browser_tool.os, "unlink", lambda *_args: None)
-    monkeypatch.setattr(browser_tool.os, "makedirs", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(browser_tool, "_read_command_output_files", lambda *_args: (stdout, ""))
-    monkeypatch.setattr(browser_tool, "_unlink_command_output_files", lambda *_args: None)
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
     monkeypatch.setattr("builtins.open", mock_open(read_data=stdout))
 
-    result = browser_tool._run_browser_command("task", "click", ["@e1"])
+    result = _session._run_browser_command("task", "click", ["@e1"])
 
     assert result == {"success": True, "data": {"clicked": "@e1"}}
     assert captured == [[
@@ -364,6 +366,9 @@ def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):
     """browser_navigate on a CDP session must not fall through to unbound CLI."""
     import json
     import tools.browser_tool as bt
+    import tools.browser_tool_session as _session
+    import tools.browser_tool_cdp as _cdp
+    import tools.browser_tool_cloud as _cloud
     import tools.browser_supervisor as bsup
 
     session = {
@@ -389,15 +394,15 @@ def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):
         def get(self, task_id):
             return _Sup()
 
-    monkeypatch.setattr(bt, "_get_session_info", lambda key: session)
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda task_id: None)
-    monkeypatch.setattr(bt, "_bind_session_page_target", lambda tid, info: None)
+    monkeypatch.setattr(_session, "_get_session_info", lambda key: session)
+    monkeypatch.setattr(_cdp, "_ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr(_session, "_bind_session_page_target", lambda tid, info: None)
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(bt, "_is_local_backend", lambda: False)
-    monkeypatch.setattr(bt, "_allow_private_urls", lambda: True)
+    monkeypatch.setattr(_cloud, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(_cloud, "_allow_private_urls", lambda: True)
     monkeypatch.setattr(bt, "_is_always_blocked_url", lambda url: False)
     monkeypatch.setattr(bt, "check_website_access", lambda url: None)
-    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(_cloud, "_get_cloud_provider", lambda: None)
     monkeypatch.setattr(bt, "_maybe_start_recording", lambda key: None)
     monkeypatch.setattr(bt, "_sensitive_query_param_name", lambda url: None)
     monkeypatch.setattr(bt, "_normalize_url_for_request", lambda url: url)
@@ -406,7 +411,7 @@ def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):
     def _fail_cli(*a, **k):
         raise AssertionError("must not call agent-browser CLI for CDP navigate")
 
-    monkeypatch.setattr(bt, "_run_browser_command", _fail_cli)
+    monkeypatch.setattr(_session, "_run_browser_command", _fail_cli)
 
     out = json.loads(bt.browser_navigate("https://www.baidu.com", task_id="sess-A"))
     assert out["success"] is True
@@ -418,6 +423,9 @@ def test_two_task_navigate_paths_keep_distinct_targets(monkeypatch):
     """Two task_ids must route navigate to different page targets."""
     import json
     import tools.browser_tool as bt
+    import tools.browser_tool_session as _session
+    import tools.browser_tool_cdp as _cdp
+    import tools.browser_tool_cloud as _cloud
     import tools.browser_supervisor as bsup
 
     sessions = {
@@ -451,21 +459,21 @@ def test_two_task_navigate_paths_keep_distinct_targets(monkeypatch):
             tab = "TAB-A" if task_id == "sess-A" else "TAB-B"
             return _Sup(task_id, tab)
 
-    monkeypatch.setattr(bt, "_get_session_info", lambda key: sessions[key])
-    monkeypatch.setattr(bt, "_ensure_cdp_supervisor", lambda task_id: None)
-    monkeypatch.setattr(bt, "_bind_session_page_target", lambda tid, info: None)
+    monkeypatch.setattr(_session, "_get_session_info", lambda key: sessions[key])
+    monkeypatch.setattr(_cdp, "_ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr(_session, "_bind_session_page_target", lambda tid, info: None)
     monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(bt, "_is_local_backend", lambda: False)
-    monkeypatch.setattr(bt, "_allow_private_urls", lambda: True)
+    monkeypatch.setattr(_cloud, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(_cloud, "_allow_private_urls", lambda: True)
     monkeypatch.setattr(bt, "_is_always_blocked_url", lambda url: False)
     monkeypatch.setattr(bt, "check_website_access", lambda url: None)
-    monkeypatch.setattr(bt, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(_cloud, "_get_cloud_provider", lambda: None)
     monkeypatch.setattr(bt, "_maybe_start_recording", lambda key: None)
     monkeypatch.setattr(bt, "_sensitive_query_param_name", lambda url: None)
     monkeypatch.setattr(bt, "_normalize_url_for_request", lambda url: url)
     monkeypatch.setattr(bsup, "SUPERVISOR_REGISTRY", _Reg())
     monkeypatch.setattr(
-        bt,
+        _session,
         "_run_browser_command",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("no CLI")),
     )
