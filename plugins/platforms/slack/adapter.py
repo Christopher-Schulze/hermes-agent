@@ -1123,7 +1123,7 @@ class SlackAdapter(BasePlatformAdapter):
         # routes the command event through the socket regardless of the
         # manifest's request URL, but it will not deliver an event for
         # a slash command the manifest doesn't declare.
-        from hermes_cli.commands import slack_native_slashes
+        from hermes_cli.commands_platforms import slack_native_slashes
 
         _slash_names = [name for name, _d, _h in slack_native_slashes()]
         if _slash_names:
