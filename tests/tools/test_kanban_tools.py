@@ -527,6 +527,7 @@ def test_create_board_param_isolates_workspace_default(monkeypatch, tmp_path):
         pass
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
     kb._INITIALIZED_PATHS.clear()
@@ -549,7 +550,7 @@ def test_create_board_param_isolates_workspace_default(monkeypatch, tmp_path):
     }))
     assert d["ok"] is True, d
 
-    conn = kb.connect(board="alpha")
+    conn = kbc.connect(board="alpha")
     try:
         task = kb.get_task(conn, d["task_id"])
         assert task is not None
