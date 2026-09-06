@@ -316,11 +316,11 @@ def _remove_tree(path: Path, *, boundary: Path) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
-def _reject(path: Path, boundary: Path, msg: str, *args, detail: str = "") -> tuple[Path | None, str]:
-    """Log a rejected candidate and clean up its tree; returns ``(None, detail)``."""
+def _reject(path: Path, boundary: Path, msg: str, *args) -> None:
+    """Log a rejected candidate and clean up its tree; always returns ``None``."""
     logger.warning(msg, *args)
     _remove_tree(path, boundary=boundary)
-    return None, detail
+    return None
 
 
 def _token() -> str:
@@ -585,13 +585,13 @@ def _stage_candidate_venv(
             "--managed-python", "--no-python-downloads", "--relocatable", "--no-config"],
         cwd=project_root, env=env, capture_output=True, text=True, check=False)
     if created.returncode != 0:
-        return reject(
+        reject(
             "candidate venv creation failed (rc=%d): %s",
-            created.returncode, (created.stderr or created.stdout or "").strip(),
-            detail="replacement environment venv creation failed")
+            created.returncode, (created.stderr or created.stdout or "").strip())
+        return None, "replacement environment venv creation failed"
     if not (project_root / "uv.lock").is_file():
-        return reject("candidate dependency sync refused: uv.lock is missing",
-                      detail="replacement environment dependency sync refused: uv.lock is missing")
+        reject("candidate dependency sync refused: uv.lock is missing")
+        return None, "replacement environment dependency sync refused: uv.lock is missing"
     # Locked sync must see project [tool.uv] exclude-newer; --no-config / UV_NO_CONFIG drops it
     # and uv 0.12+ refuses --locked.
     sync_env = dict(env)
@@ -609,13 +609,14 @@ def _stage_candidate_venv(
         [uv_bin, "sync", "--extra", "all", "--locked", "--python", str(_venv_python(candidate))],
         cwd=project_root, env=sync_env, stderr=subprocess.STDOUT, check=False)
     if synced.returncode != 0:
-        return reject("candidate dependency sync failed (rc=%d)", synced.returncode,
-                      detail="replacement environment dependency sync failed (uv sync --locked)")
+        reject("candidate dependency sync failed (rc=%d)", synced.returncode)
+        return None, "replacement environment dependency sync failed (uv sync --locked)"
     healthy, detail, _ = _smoke_candidate_venv(candidate)
     if not healthy:
-        return reject(
-            "candidate venv smoke failed: %s", detail,
-            detail="replacement environment did not pass dependency and import smoke tests"
+        reject("candidate venv smoke failed: %s", detail)
+        return (
+            None,
+            "replacement environment did not pass dependency and import smoke tests"
             + (f": {detail}" if detail else ""),
         )
     return candidate, ""
