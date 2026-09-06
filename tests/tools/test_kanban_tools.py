@@ -1171,7 +1171,8 @@ def test_create_in_worker_inherits_parent_session_id(worker_env, monkeypatch):
     ephemeral_worker_session = "worker-ephemeral-session-123"
 
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         conn.execute(
             "UPDATE tasks SET session_id = ? WHERE id = ?",
@@ -1196,7 +1197,7 @@ def test_create_in_worker_inherits_parent_session_id(worker_env, monkeypatch):
     d = json.loads(out)
     assert d["ok"] is True, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
         assert child.session_id == durable_parent_session, (
@@ -1213,7 +1214,8 @@ def test_create_in_worker_prefers_explicit_session_id(worker_env, monkeypatch):
     explicit_session = "explicit-override-789"
 
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         conn.execute(
             "UPDATE tasks SET session_id = ? WHERE id = ?",
@@ -1233,7 +1235,7 @@ def test_create_in_worker_prefers_explicit_session_id(worker_env, monkeypatch):
     d = json.loads(out)
     assert d["ok"] is True, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
         assert child.session_id == explicit_session, (
@@ -1250,7 +1252,8 @@ def test_create_in_worker_falls_back_to_hermes_session_id(worker_env, monkeypatc
     monkeypatch.setenv("HERMES_SESSION_ID", ephemeral_worker_session)
 
     from hermes_cli import kanban_db as kb
-    conn = kb.connect()
+    from hermes_cli import kanban_db_connect as kbc
+    conn = kbc.connect()
     try:
         conn.execute(
             "UPDATE tasks SET session_id = NULL WHERE id = ?",
@@ -1267,7 +1270,7 @@ def test_create_in_worker_falls_back_to_hermes_session_id(worker_env, monkeypatc
     d = json.loads(out)
     assert d["ok"] is True, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         child = kb.get_task(conn, d["task_id"])
         assert child.session_id == ephemeral_worker_session, (
