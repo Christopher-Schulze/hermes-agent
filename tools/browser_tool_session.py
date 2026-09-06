@@ -1040,6 +1040,11 @@ def _run_browser_command(
             return engine, result
 
         engine, result = run_fenced_pair(session_info, _dispatch_owned)
+        if isinstance(result, list) and result:
+            final = result[-1]
+            result = {"success": bool(final.get("success")), "data": final.get("result") or {}}
+            if final.get("error"):
+                result["error"] = final["error"]
         if result.get("code") == "human_has_control":
             return result
         # #115184: a protocol-level failure (exit 101 on a stale session daemon, empty/non-JSON
