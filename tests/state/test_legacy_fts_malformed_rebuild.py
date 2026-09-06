@@ -12,12 +12,9 @@ A trigger-complete legacy DB whose index is corrupt must self-heal on SessionDB 
 import sqlite3
 import pytest
 
-from hermes_state import (
-    LEGACY_FTS_SQL,
-    LEGACY_FTS_TRIGRAM_SQL,
-    SCHEMA_SQL,
-    SessionDB,
-)
+from hermes_state import SessionDB
+from hermes_state_common import SCHEMA_SQL
+from hermes_state_schema import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL
 
 
 def _create_legacy_db(db_path):
