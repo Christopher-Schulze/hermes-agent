@@ -722,11 +722,14 @@ def _run_browser_command(
 
     try:
         result = _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout)
-        if uses_cdp_tab_batch and isinstance(result, dict) and result.get("success"):
-            # _spawn_and_collect returns parsed JSON; for batch mode the real
-            # result is the last element of the list.  Unwrap it here so the
-            # caller sees the same shape as a non-batch command.
-            pass  # _spawn_and_collect already handles JSON parsing
+        if uses_cdp_tab_batch and isinstance(result, list) and result:
+            final = result[-1]
+            result = {
+                "success": bool(final.get("success")),
+                "data": final.get("result") or {},
+            }
+            if final.get("error"):
+                result["error"] = final["error"]
     except Exception as e:
         _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
