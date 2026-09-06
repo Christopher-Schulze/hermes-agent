@@ -437,10 +437,8 @@ def _not_found(session_id: str) -> dict:
 
 
 def _output_tail(session: "ProcessSession", n: int) -> str:
-    """Last *n* chars of the session output with ANSI sequences stripped."""
-    from tools.ansi_strip import strip_ansi
-
-    return strip_ansi(session.output_buffer[-n:])
+    """Last *n* chars of the session output (raw — ANSI stripping happens in render_process_output)."""
+    return session.output_buffer[-n:] if session.output_buffer else ""
 
 
 def transform_terminal_output(
@@ -1461,8 +1459,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
             }
-            _redact_process_result(notification, task_id=session.task_id)
-            self.completion_queue.put(notification)
+            self.completion_queue.put(
+                _redact_process_result(notification, task_id=session.task_id)
+            )
         session._completion_event.set()
 
     @staticmethod
@@ -1801,13 +1800,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
-        from tools.ansi_strip import strip_ansi
-
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
         with session._lock:
-            full_output = strip_ansi(session.output_buffer)
+            full_output = session.output_buffer
         lines = full_output.splitlines()
         total_lines = len(lines)
         # offset=None -> last N lines; an explicit offset=0 means the HEAD (don't
