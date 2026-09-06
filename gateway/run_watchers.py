@@ -291,7 +291,7 @@ class GatewaySessionWatchersMixin:
         in tests without the 90-second initial delay or the sleep loop.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
-        from gateway.session import MessageEvent, MessageType
+        from gateway.platforms.base import MessageEvent, MessageType
         # Don't schedule recovery turns while the gateway is draining —
         # they would be immediately interrupted by the shutdown sequence.
         if getattr(self, "_draining", False):

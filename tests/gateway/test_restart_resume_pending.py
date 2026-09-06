@@ -1851,7 +1851,7 @@ class TestStuckLoopEscalation:
         def _fake_atomic_json_write(path, payload, **kwargs):
             calls.append((path, payload, kwargs))
 
-        monkeypatch.setattr("gateway.run.atomic_json_write", _fake_atomic_json_write)
+        monkeypatch.setattr("utils.atomic_json_write", _fake_atomic_json_write)
 
         runner = object.__new__(GatewayRunner)
         runner._increment_restart_failure_counts({session_key})
@@ -1887,7 +1887,7 @@ class TestStuckLoopEscalation:
         def _fake_atomic_json_write(path, payload, **kwargs):
             calls.append((path, payload, kwargs))
 
-        monkeypatch.setattr("gateway.run.atomic_json_write", _fake_atomic_json_write)
+        monkeypatch.setattr("utils.atomic_json_write", _fake_atomic_json_write)
 
         runner = object.__new__(GatewayRunner)
         await runner._clear_restart_failure_count(session_key)
