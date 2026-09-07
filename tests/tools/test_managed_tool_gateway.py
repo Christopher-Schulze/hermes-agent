@@ -15,8 +15,9 @@ from unittest.mock import patch
 
 import pytest
 
+import tools.managed_tool_gateway as managed_tool_gateway
+
 from tools import managed_gateway_auth
-from tools import managed_tool_gateway
 from tools.managed_tool_gateway import (
     ManagedToolGatewayConfig,
     _access_token_is_expiring,
