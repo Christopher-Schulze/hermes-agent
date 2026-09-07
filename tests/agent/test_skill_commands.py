@@ -602,7 +602,7 @@ class TestResolveSkillCommandKey:
         the skill invoked when that token comes back must both belong to the
         lexicographically first canonical key.
         """
-        from hermes_cli.commands import telegram_menu_commands
+        from hermes_cli.commands_platforms import telegram_menu_commands
 
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
