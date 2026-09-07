@@ -162,14 +162,14 @@ def test_cli_decompose_preserves_create_assignee(kanban_home, capsys):
     outcome = jsonlib.loads(capsys.readouterr().out)
     assert outcome["ok"] is True
     assert outcome["fanout"] is True
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         root = kb.get_task(conn, task_id)
     assert root is not None
     assert root.assignee == "owner"
 
 
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -195,7 +195,7 @@ def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     assert outcome.ok, outcome.reason
     assert outcome.fanout is False
     assert outcome.new_title == "Tightened title"
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
     # specify path with no parents -> recompute_ready flips to 'ready'
@@ -205,7 +205,7 @@ def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
 
 
 def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(
             conn,
             title="already routed",
@@ -235,7 +235,7 @@ def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
             p.stop()
 
     assert outcome.ok, outcome.reason
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
     assert task.assignee == "engineer"
@@ -243,7 +243,7 @@ def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
 
 
 def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="route me", triage=True)
 
     llm_payload = jsonlib.dumps({
@@ -268,7 +268,7 @@ def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
             p.stop()
 
     assert outcome.ok, outcome.reason
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task = kb.get_task(conn, tid)
     assert task is not None
     assert task.assignee == "engineer"
@@ -307,7 +307,7 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
 
 
 def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)
 
     # Roster only has 'orchestrator' and 'fallback'; LLM picks 'made_up'.
@@ -342,14 +342,14 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
 
     assert outcome.ok, outcome.reason
     assert outcome.child_ids and len(outcome.child_ids) == 1
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         child = kb.get_task(conn, outcome.child_ids[0])
     # 'made_up' wasn't in roster, so assignee rewritten to 'fallback'
     assert child.assignee == "fallback"
 
 
 def test_decompose_handles_malformed_llm_json(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)
 
     patches = _patch_list_profiles(["orchestrator"])
@@ -383,7 +383,7 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
 
 
 def test_decompose_no_aux_client_configured(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         tid = kb.create_task(conn, title="x", triage=True)
 
     patches = _patch_list_profiles(["orchestrator"])
