@@ -865,7 +865,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     # Simulate a path that disappears (or was only named for reference) after
     # completion by patching the stored completed event payload.
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         row = conn.execute(
             "SELECT id, payload FROM task_events "

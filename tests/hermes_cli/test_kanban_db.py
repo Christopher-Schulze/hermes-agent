@@ -632,7 +632,7 @@ def test_complete_task_rejects_missing_durable_artifact(kanban_home, tmp_path):
     """
     workspace = tmp_path / "persistent"
     workspace.mkdir()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         t = kb.create_task(
             conn, title="review doc", workspace_kind="dir",
             workspace_path=str(workspace),
@@ -657,7 +657,7 @@ def test_complete_task_rejects_empty_and_directory_durable_artifacts(kanban_home
     empty_file.write_bytes(b"")
     subdir = workspace / "subdir"
     subdir.mkdir()
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         t = kb.create_task(
             conn, title="collect outputs", workspace_kind="dir",
             workspace_path=str(workspace),
@@ -680,7 +680,7 @@ def test_complete_task_accepts_existing_durable_artifact(kanban_home, tmp_path):
     workspace.mkdir()
     deliverable = workspace / "report.md"
     deliverable.write_text("finished\n", encoding="utf-8")
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         t = kb.create_task(
             conn, title="write report", workspace_kind="dir",
             workspace_path=str(workspace),

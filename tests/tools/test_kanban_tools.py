@@ -212,6 +212,7 @@ def test_complete_rejects_missing_durable_artifact(worker_env, tmp_path):
     can fix the path and retry the same handoff.
     """
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
     from tools import kanban_tools as kt
 
     out = json.loads(kt._handle_complete({
@@ -221,7 +222,7 @@ def test_complete_rejects_missing_durable_artifact(worker_env, tmp_path):
     assert out.get("error")
     assert "still in-flight" in out["error"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, worker_env)
         assert task is not None
