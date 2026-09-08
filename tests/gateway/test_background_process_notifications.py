@@ -230,7 +230,9 @@ async def test_completion_notification_transforms_and_redacts_hook_output(
     adapter = runner.adapters[Platform.TELEGRAM]
     await runner._run_process_watcher(_watcher_dict())
 
+    assert isinstance(adapter.send, AsyncMock)
     adapter.send.assert_awaited_once()
+    assert adapter.send.await_args is not None
     message = adapter.send.await_args.args[1]
     assert seen == [f"\x1b[31mraw output with {original_secret}\x1b[0m"]
     assert "\x1b" not in message
