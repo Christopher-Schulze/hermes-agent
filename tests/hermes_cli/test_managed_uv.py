@@ -664,7 +664,7 @@ class TestStageCandidateVenvCrossPlatform:
                  "hermes_cli.managed_uv._smoke_candidate_venv",
                  return_value=(True, "", None),
              ):
-            candidate = _stage_candidate_venv(
+            candidate, detail = _stage_candidate_venv(
                 "uv",
                 project_root=root,
                 generation=generation,
