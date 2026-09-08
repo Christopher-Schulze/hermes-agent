@@ -3010,31 +3010,30 @@ class TestHandleProcessTransformHook:
     def test_output_unchanged_when_hook_returns_none(self, monkeypatch):
         """No valid hook replacement leaves output unchanged."""
         pr, sess = self._setup(monkeypatch, "echo hi", "original output")
-        monkeypatch.setattr(
-            "hermes_cli.lifecycle.invoke_hook",
-            lambda hook_name, **kw: [None]
-            if hook_name == "transform_terminal_output" else [],
-        )
+        hook = MagicMock(return_value=[None])
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
         out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
         assert out["output"] == "original output"
+        hook.assert_called_once()
 
     def test_output_unchanged_when_no_hook_registered(self, monkeypatch):
         """No registered hook leaves output unchanged."""
         pr, sess = self._setup(monkeypatch, "echo hi", "plain output")
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", lambda hook_name, **kw: [])
+        hook = MagicMock(return_value=[])
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
         out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
         assert out["output"] == "plain output"
+        hook.assert_called_once()
 
     def test_hook_exception_falls_back_to_original(self, monkeypatch):
         """A plugin exception must not break process polling."""
         pr, sess = self._setup(monkeypatch, "echo hi", "safe output")
 
-        def _raise(*args, **kwargs):
-            raise RuntimeError("plugin crashed")
-
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _raise)
+        hook = MagicMock(side_effect=RuntimeError("plugin crashed"))
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
         out = json.loads(pr._handle_process({"action": "wait", "session_id": sess.id}))
         assert out["output"] == "safe output"
+        hook.assert_called_once()
 
     def test_hook_receives_command_and_returncode(self, monkeypatch):
         """The hook receives command, exit code, and task ID context."""
