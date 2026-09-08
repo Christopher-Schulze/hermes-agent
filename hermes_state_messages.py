@@ -7,7 +7,10 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from hermes_state import SessionDB
 
 from agent.context_compressor import _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, split_user_originated_turn
 from agent.memory_manager import sanitize_context
@@ -890,7 +893,7 @@ class SessionMessagesMixin:
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
             f"{active_clause} ORDER BY id", tuple(session_ids))
 
-    def has_dangling_tool_call_tail(self, session_id: str) -> bool:
+    def has_dangling_tool_call_tail(self: SessionDB, session_id: str) -> bool:
         """Check whether a session's last active message is an unanswered ``assistant(tool_calls)``.
 
         This is the DB-level signature of a **wedged session** (#58891): the

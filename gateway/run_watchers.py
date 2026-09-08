@@ -11,7 +11,10 @@ import contextlib
 import logging
 import time
 from collections import Counter
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    from gateway.run import GatewayRunner
 
 from gateway.session_stall import (
     format_session_stall_notification,
@@ -237,7 +240,7 @@ class GatewaySessionWatchersMixin:
                 logger.debug("Session stall watcher error: %s", exc)
             await _interruptible_sleep(self, max(1, int(float(interval))))
 
-    async def _session_health_watcher(self, interval: float = 60.0) -> None:
+    async def _session_health_watcher(self: GatewayRunner, interval: float = 60.0) -> None:
         """Background task that detects and recovers wedged sessions (#58891).
 
         A session is **wedged** when its last persisted message is an
@@ -283,7 +286,7 @@ class GatewaySessionWatchersMixin:
                 await asyncio.sleep(1)
                 _slept += 1
 
-    async def _session_health_probe(self) -> int:
+    async def _session_health_probe(self: GatewayRunner) -> int:
         """Run one wedge-detection + recovery pass.  Returns the count of
         sessions scheduled for recovery.
 
