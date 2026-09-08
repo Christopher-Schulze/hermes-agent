@@ -484,7 +484,7 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
-    n_tasks = len(task_list)
+    n_tasks = len(task_list or [])
     # Reserve only after fallible pre-dispatch setup, but before building any
     # child. This keeps concurrent calls atomic without leaking budget when
     # setup fails. A build failure below releases the complete reservation.
