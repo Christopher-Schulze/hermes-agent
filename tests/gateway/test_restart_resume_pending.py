@@ -993,7 +993,7 @@ async def test_drain_timeout_marks_resume_pending():
     active session as resume_pending BEFORE the interrupt fires, so the
     next startup's suspend_recently_active() does not destroy them."""
     runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
     runner._restart_drain_timeout = 0.05
 
     running_agent = MagicMock()
@@ -1025,7 +1025,7 @@ async def test_drain_timeout_marks_resume_pending():
 @pytest.mark.asyncio
 async def test_drain_timeout_uses_restart_reason_when_restarting():
     runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
     runner._restart_drain_timeout = 0.05
     runner._restart_requested = True
 
@@ -1057,7 +1057,7 @@ async def test_drain_timeout_skips_pending_sentinel_sessions():
     from gateway.run import _AGENT_PENDING_SENTINEL
 
     runner, adapter = make_restart_runner()
-    adapter.disconnect = AsyncMock()
+    adapter.disconnect = AsyncMock()  # type: ignore[assignment]
     runner._restart_drain_timeout = 0.05
 
     session_key_real = "agent:main:telegram:dm:A"
@@ -1108,14 +1108,15 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
+    handle_message_mock.assert_awaited_once()
+    event = handle_message_mock.await_args.args[0]
     assert isinstance(event, MessageEvent)
     assert event.internal is True
     assert event.message_type == MessageType.TEXT
@@ -1150,13 +1151,14 @@ async def test_startup_auto_resume_includes_crash_recovery():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
+    handle_message_mock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1180,12 +1182,13 @@ async def test_startup_auto_resume_skips_stale_entries():
         last_resume_marked_at=stale_marker,
     )
     runner.session_store._entries = {stale_entry.session_key: stale_entry}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1222,12 +1225,13 @@ async def test_startup_auto_resume_skips_suspended_and_originless():
         suspended_entry.session_key: suspended_entry,
         originless.session_key: originless,
     }
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1253,12 +1257,13 @@ async def test_startup_auto_resume_skips_disallowed_reasons():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {other_entry.session_key: other_entry}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1273,8 +1278,9 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
     after this gate passes.
     """
     runner, adapter = make_restart_runner()
-    runner._is_user_authorized = lambda _source: False
-    runner._persist_active_agents = MagicMock()
+    runner._is_user_authorized = lambda _source: False  # type: ignore[assignment]
+    persist_active_agents_mock = MagicMock()
+    runner._persist_active_agents = persist_active_agents_mock  # type: ignore[assignment]
     source = make_restart_source(chat_id="revoked-chat")
     pending_entry = SessionEntry(
         session_key="agent:main:telegram:dm:revoked-chat",
@@ -1289,16 +1295,17 @@ async def test_startup_auto_resume_skips_unauthorized_owner():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
     # No slot was claimed and nothing was persisted for the skipped session.
     assert pending_entry.session_key not in runner._running_agents
-    runner._persist_active_agents.assert_not_called()
+    persist_active_agents_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1312,8 +1319,9 @@ async def test_startup_auto_resume_fails_closed_on_auth_error():
     def _boom(_source):
         raise RuntimeError("allowlist backend down")
 
-    runner._is_user_authorized = _boom
-    runner._persist_active_agents = MagicMock()
+    runner._is_user_authorized = _boom  # type: ignore[assignment]
+    persist_active_agents_mock = MagicMock()
+    runner._persist_active_agents = persist_active_agents_mock  # type: ignore[assignment]
     source = make_restart_source(chat_id="err-chat")
     pending_entry = SessionEntry(
         session_key="agent:main:telegram:dm:err-chat",
@@ -1328,15 +1336,16 @@ async def test_startup_auto_resume_fails_closed_on_auth_error():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
     await asyncio.sleep(0)
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
     assert pending_entry.session_key not in runner._running_agents
-    runner._persist_active_agents.assert_not_called()
+    persist_active_agents_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1357,12 +1366,13 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     runner.adapters = {}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1391,12 +1401,13 @@ async def test_reconnect_reschedules_pending_after_late_platform_connect():
         last_resume_marked_at=datetime.now(),
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     # Platform was not connected at gateway startup → session skipped.
     runner.adapters = {}
     assert runner._schedule_resume_pending_sessions() == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
 
     # Platform reconnects → its pending session is retried.
     runner.adapters = {Platform.TELEGRAM: adapter}
@@ -1404,8 +1415,8 @@ async def test_reconnect_reschedules_pending_after_late_platform_connect():
     await asyncio.sleep(0)
 
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
+    handle_message_mock.assert_awaited_once()
+    event = handle_message_mock.await_args.args[0]
     assert isinstance(event, MessageEvent)
     assert event.internal is True
     assert event.message_type == MessageType.TEXT
@@ -1450,7 +1461,8 @@ async def test_reconnect_reschedule_is_platform_scoped():
         tg_entry.session_key: tg_entry,
         discord_entry.session_key: discord_entry,
     }
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
     runner.adapters = {Platform.TELEGRAM: adapter}
 
     scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
@@ -1459,8 +1471,8 @@ async def test_reconnect_reschedule_is_platform_scoped():
     # Only the telegram session is resumed; the discord session waits for its
     # own reconnect.
     assert scheduled == 1
-    adapter.handle_message.assert_awaited_once()
-    event = adapter.handle_message.await_args.args[0]
+    handle_message_mock.assert_awaited_once()
+    event = handle_message_mock.await_args.args[0]
     assert event.source == tg_source
 
 
@@ -1485,12 +1497,13 @@ async def test_auto_resume_skips_sessions_with_running_agent():
     )
     runner.session_store._entries = {pending_entry.session_key: pending_entry}
     runner._running_agents = {pending_entry.session_key: object()}
-    adapter.handle_message = AsyncMock()
+    handle_message_mock = AsyncMock()
+    adapter.handle_message = handle_message_mock  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions(platform=Platform.TELEGRAM)
 
     assert scheduled == 0
-    adapter.handle_message.assert_not_called()
+    handle_message_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1681,8 +1694,8 @@ async def test_restart_banner_uses_try_to_resume_wording():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert len(adapter.sent) == 1
-    msg = adapter.sent[0]
+    assert len(adapter.sent) == 1  # type: ignore[attr-defined]
+    msg = adapter.sent[0]  # type: ignore[attr-defined]
     assert "restarting" in msg
     assert "try to resume" in msg
 
@@ -1718,7 +1731,7 @@ async def test_restart_home_channel_notification_dedupes_active_chat():
 
     await runner._notify_active_sessions_of_shutdown()
 
-    assert len(adapter.sent) == 1
+    assert len(adapter.sent) == 1  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -1758,11 +1771,12 @@ async def test_restart_home_channel_notification_ignores_false_send_result():
         chat_id="home-42",
         name="Ops Home",
     )
-    adapter.send = AsyncMock(return_value=SendResult(success=False, error="network down"))
+    send_mock = AsyncMock(return_value=SendResult(success=False, error="network down"))
+    adapter.send = send_mock  # type: ignore[assignment]
 
     await runner._notify_active_sessions_of_shutdown()
 
-    adapter.send.assert_called_once()
+    send_mock.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1976,7 +1990,7 @@ async def test_auto_resume_sentinel_cleaned_on_task_failure():
     async def _failing_handle(event):
         raise RuntimeError("adapter exploded")
 
-    adapter.handle_message = _failing_handle
+    adapter.handle_message = _failing_handle  # type: ignore[assignment]
 
     scheduled = runner._schedule_resume_pending_sessions()
     assert scheduled == 1
