@@ -1116,7 +1116,7 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
 
     assert scheduled == 1
     handle_message_mock.assert_awaited_once()
-    event = handle_message_mock.await_args.args[0]
+    event = handle_message_mock.await_args.args[0]  # type: ignore[union-attr]
     assert isinstance(event, MessageEvent)
     assert event.internal is True
     assert event.message_type == MessageType.TEXT
@@ -1416,7 +1416,7 @@ async def test_reconnect_reschedules_pending_after_late_platform_connect():
 
     assert scheduled == 1
     handle_message_mock.assert_awaited_once()
-    event = handle_message_mock.await_args.args[0]
+    event = handle_message_mock.await_args.args[0]  # type: ignore[union-attr]
     assert isinstance(event, MessageEvent)
     assert event.internal is True
     assert event.message_type == MessageType.TEXT
@@ -1472,7 +1472,7 @@ async def test_reconnect_reschedule_is_platform_scoped():
     # own reconnect.
     assert scheduled == 1
     handle_message_mock.assert_awaited_once()
-    event = handle_message_mock.await_args.args[0]
+    event = handle_message_mock.await_args.args[0]  # type: ignore[union-attr]
     assert event.source == tg_source
 
 
