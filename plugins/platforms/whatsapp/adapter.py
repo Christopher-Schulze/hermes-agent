@@ -718,51 +718,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     _SPLIT_THRESHOLD = 6000  # WhatsApp supports ~65K chars; generous threshold
 
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=self._session_key_profile(event.source),
-        )
-
     def _enqueue_text_event(self, event: MessageEvent) -> None:
-        """Buffer a text event and reset the flush timer.
-
-        When WhatsApp delivers rapid-fire messages (e.g. forwarded
-        batches), this concatenates them and waits for a short quiet
-        period before dispatching the combined message.
-        """
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        chunk_len = len(event.text or "")
+        existing = self._pending_text_batches.get(self._text_batch_key(event))
+        super()._enqueue_text_event(event)
         if existing is None:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending_text_batches[key] = event
-        else:
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            # Rapid-fire text bursts must reply-anchor to the latest chunk,
-            # otherwise the bot's reply quotes an earlier message (issue #59582).
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                existing.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(existing, "reply_to_message_id"):
-                existing.reply_to_message_id = str(latest_anchor)
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-
-        prior_task = self._pending_text_batch_tasks.get(key)
-        if prior_task and not prior_task.done():
-            prior_task.cancel()
-        self._pending_text_batch_tasks[key] = asyncio.create_task(
-            self._flush_text_batch(key)
-        )
+            return
+        # Keep the latest reply anchor while the shared batcher owns text and timers.
+        latest_message_id = event.message_id
+        latest_anchor = latest_message_id or event.reply_to_message_id
+        if latest_message_id is not None:
+            existing.message_id = str(latest_message_id)
+        if latest_anchor is not None:
+            existing.reply_to_message_id = str(latest_anchor)
 
     async def _flush_text_batch(self, key: str) -> None:
         current_task = asyncio.current_task()
