@@ -484,47 +484,6 @@ class TestRuntimeRepair:
         assert not (root / ".hermes-runtime").exists()
         mock_install.assert_not_called()
 
-    def test_stage_candidate_sync_keeps_uv_project_config(self, tmp_path):
-        from hermes_cli.managed_uv import _stage_candidate_venv
-
-        root = tmp_path / "checkout"
-        root.mkdir()
-        (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
-        generation = root / ".hermes-runtime" / "python" / "gen"
-        python = generation / "bin" / "python"
-        python.parent.mkdir(parents=True)
-        python.write_text("py", encoding="utf-8")
-
-        calls = []
-
-        def fake_run(argv, **kwargs):
-            calls.append((list(argv), kwargs.get("env")))
-            return MagicMock(returncode=0)
-
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
-             patch(
-                 "hermes_cli.managed_uv._smoke_candidate_venv",
-                 return_value=(True, "", None),
-             ):
-            candidate, detail = _stage_candidate_venv(
-                "uv",
-                project_root=root,
-                generation=generation,
-                python=python,
-            )
-
-        assert candidate is not None
-        assert detail == ""
-        assert len(calls) == 2
-        venv_argv, venv_env = calls[0]
-        sync_argv, sync_env = calls[1]
-        assert venv_argv[:2] == ["uv", "venv"]
-        assert "--no-config" in venv_argv
-        assert venv_env.get("UV_NO_CONFIG") == "1"
-        assert sync_argv[:2] == ["uv", "sync"]
-        assert "--locked" in sync_argv
-        assert "--no-config" not in sync_argv
-        assert "UV_NO_CONFIG" not in sync_env
     def test_failed_candidate_preserves_live_venv(self, tmp_path):
         from hermes_cli.managed_uv import (
             _acquire_repair_lock,
@@ -671,7 +630,7 @@ class TestStageCandidateVenvCrossPlatform:
                  "hermes_cli.managed_uv._smoke_candidate_venv",
                  return_value=(True, "", None),
              ):
-            candidate = _stage_candidate_venv(
+            candidate, detail = _stage_candidate_venv(
                 "uv",
                 project_root=root,
                 generation=generation,
@@ -679,6 +638,7 @@ class TestStageCandidateVenvCrossPlatform:
             )
 
         assert candidate is not None
+        assert detail == ""
         assert len(calls) == 2
         venv_argv, venv_kwargs = calls[0]
         sync_argv, sync_kwargs = calls[1]
@@ -1591,31 +1551,55 @@ class TestWindowsRuntimeSelfLock:
 class TestStageCandidateVenvFailureDetail:
     """Candidate staging reports the failing phase precisely."""
 
-    def test_sync_failure_detail_not_smoke(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("stage", "expected_detail"),
+        [
+            ("create", "replacement environment venv creation failed"),
+            ("missing-lock", "replacement environment dependency sync refused: uv.lock is missing"),
+            ("sync", "replacement environment dependency sync failed (uv sync --locked)"),
+            ("smoke", "replacement environment did not pass dependency and import smoke tests: import failed"),
+        ],
+        ids=["create", "missing-lock", "sync", "smoke"],
+    )
+    def test_failure_detail_and_cleanup(self, tmp_path, stage, expected_detail):
         from hermes_cli.managed_uv import _stage_candidate_venv
 
         root = tmp_path / "checkout"
         root.mkdir()
-        (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
+        if stage != "missing-lock":
+            (root / "uv.lock").write_text("# lock\n", encoding="utf-8")
         generation = root / ".hermes-runtime" / "python" / "gen"
         python = generation / "bin" / "python"
         python.parent.mkdir(parents=True)
         python.write_text("py", encoding="utf-8")
+        candidates = []
+        calls = []
 
         def fake_run(cmd, **kwargs):
-            if len(cmd) > 1 and cmd[1] == "sync":
-                return MagicMock(returncode=1, stdout="", stderr="locked stale")
-            return MagicMock(returncode=0, stdout="", stderr="")
+            calls.append(cmd[1])
+            if cmd[1] == "venv":
+                candidate = Path(cmd[2])
+                candidate.mkdir(parents=True)
+                (candidate / "partial").write_text("partial install", encoding="utf-8")
+                candidates.append(candidate)
+            failed = (stage == "create" and cmd[1] == "venv") or (stage == "sync" and cmd[1] == "sync")
+            return SimpleNamespace(returncode=int(failed), stdout="", stderr="stage failed" if failed else "")
 
-        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), \
-             patch("hermes_cli.managed_uv._remove_tree"):
+        with patch("hermes_cli.managed_uv.subprocess.run", side_effect=fake_run), patch(
+            "hermes_cli.managed_uv._smoke_candidate_venv",
+            return_value=(False, "import failed", None),
+        ) as smoke:
             path, detail = _stage_candidate_venv(
-                "uv",
-                project_root=root,
-                generation=generation,
-                python=python,
+                "uv", project_root=root, generation=generation, python=python,
             )
 
         assert path is None
-        assert "dependency sync failed" in detail
-        assert "smoke" not in detail.lower()
+        assert detail == expected_detail
+        assert len(candidates) == 1
+        assert not candidates[0].exists()
+        assert python.read_text(encoding="utf-8") == "py"
+        assert calls == (["venv"] if stage in {"create", "missing-lock"} else ["venv", "sync"])
+        if stage == "smoke":
+            smoke.assert_called_once_with(candidates[0])
+        else:
+            smoke.assert_not_called()
