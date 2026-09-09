@@ -261,7 +261,8 @@ def test_two_supervisors_navigate_distinct_owned_pages(chrome_cdp, supervisor_re
     not shutil.which("agent-browser") and not shutil.which("npx"),
     reason="agent-browser integration requires agent-browser or npx",
 )
-def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, supervisor_registry, monkeypatch, tmp_path):
+@pytest.mark.parametrize("retire_page", [False, True], ids=["stable-pages", "closed-page"])
+def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, supervisor_registry, monkeypatch, tmp_path, retire_page):
     """Concurrent click/fill operations stay on their task-owned CDP pages."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("browser:\n  allow_private_urls: true\n", encoding="utf-8")
@@ -270,18 +271,23 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
     cdp_url, _port = chrome_cdp
     monkeypatch.setenv("BROWSER_CDP_URL", cdp_url)
     task_ids = ("pytest-action-a", "pytest-action-b")
+    retired_task = "pytest-action-retired"
+    all_task_ids = (retired_task, *task_ids) if retire_page else task_ids
     page_url = _interactive_page_url()
     try:
-        for task_id in task_ids:
+        for task_id in all_task_ids:
             result = json.loads(browser_tool.browser_navigate(page_url, task_id=task_id))
             assert result["success"] is True, result
         first = supervisor_registry.get(task_ids[0])
         second = supervisor_registry.get(task_ids[1])
         assert first is not None and second is not None
-        for task_id in task_ids:
+        for task_id in all_task_ids:
             snapshot = json.loads(browser_tool.browser_snapshot(task_id=task_id))
             assert snapshot["success"] is True, snapshot
             assert "Click" in snapshot["snapshot"]
+
+        if retire_page:
+            browser_tool_lifecycle._cleanup_single_browser_session(retired_task)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             click_future = pool.submit(
@@ -306,7 +312,7 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
         assert first.evaluate_runtime("document.querySelector('#owned-input').value").get("result") == ""
         assert second.evaluate_runtime("document.title").get("result") == "interactive"
     finally:
-        for task_id in task_ids:
+        for task_id in all_task_ids:
             browser_tool_lifecycle._cleanup_single_browser_session(task_id)
 
 
