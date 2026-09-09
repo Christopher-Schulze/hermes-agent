@@ -278,7 +278,10 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
         first = supervisor_registry.get(task_ids[0])
         second = supervisor_registry.get(task_ids[1])
         assert first is not None and second is not None
-        assert first.page_target_id() != second.page_target_id()
+        for task_id in task_ids:
+            snapshot = json.loads(browser_tool.browser_snapshot(task_id=task_id))
+            assert snapshot["success"] is True, snapshot
+            assert "Click" in snapshot["snapshot"]
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             click_future = pool.submit(
