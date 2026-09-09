@@ -174,44 +174,20 @@ def _interactive_page_url() -> str:
     return "data:text/html;base64," + base64.b64encode(html.encode()).decode()
 
 
-def _fire_on_page(cdp_url: str, expression: str) -> None:
-    """Navigate the first page target to a data URL and fire `expression`."""
-    import asyncio
-    import websockets as _ws_mod
+def _fire_on_page(supervisor, expression: str) -> None:
+    """Navigate and fire an expression on the page actually owned by the supervisor."""
+    from tools.browser_supervisor import _schedule
 
-    async def run():
-        async with _ws_mod.connect(cdp_url, max_size=50 * 1024 * 1024) as ws:
-            next_id = [1]
-
-            async def call(method, params=None, session_id=None):
-                cid = next_id[0]
-                next_id[0] += 1
-                p = {"id": cid, "method": method}
-                if params:
-                    p["params"] = params
-                if session_id:
-                    p["sessionId"] = session_id
-                await ws.send(json.dumps(p))
-                async for raw in ws:
-                    m = json.loads(raw)
-                    if m.get("id") == cid:
-                        return m
-
-            targets = (await call("Target.getTargets"))["result"]["targetInfos"]
-            page = next(t for t in targets if t.get("type") == "page")
-            attach = await call(
-                "Target.attachToTarget", {"targetId": page["targetId"], "flatten": True}
-            )
-            sid = attach["result"]["sessionId"]
-            await call("Page.navigate", {"url": _test_page_url()}, session_id=sid)
-            await asyncio.sleep(1.5)  # let the page load
-            await call(
-                "Runtime.evaluate",
-                {"expression": expression, "returnByValue": True},
-                session_id=sid,
-            )
-
-    asyncio.run(run())
+    result = _schedule(
+        supervisor._cdp("Page.navigate", {"url": _test_page_url()}, session_id=supervisor._page_session_id),
+        supervisor._loop,
+        timeout=10,
+    )
+    assert "error" not in result, result
+    assert not result.get("result", {}).get("errorText"), result
+    time.sleep(1.5)
+    result = supervisor.evaluate_runtime(expression)
+    assert result["ok"] is True, result
 
 
 @pytest.fixture
@@ -239,7 +215,7 @@ def test_supervisor_start_and_snapshot(chrome_cdp, supervisor_registry):
     supervisor = supervisor_registry.get_or_start(task_id="pytest-1", cdp_url=cdp_url)
 
     # Navigate so the frame tree populates.
-    _fire_on_page(cdp_url, "/* no dialog */ void 0")
+    _fire_on_page(supervisor, "/* no dialog */ void 0")
 
     # Give a moment for frame events to propagate
     time.sleep(1.0)
@@ -285,23 +261,25 @@ def test_two_supervisors_navigate_distinct_owned_pages(chrome_cdp, supervisor_re
     not shutil.which("agent-browser") and not shutil.which("npx"),
     reason="agent-browser integration requires agent-browser or npx",
 )
-def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, supervisor_registry, monkeypatch):
+def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, supervisor_registry, monkeypatch, tmp_path):
     """Concurrent click/fill operations stay on their task-owned CDP pages."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("browser:\n  allow_private_urls: true\n", encoding="utf-8")
     from tools import browser_tool, browser_tool_lifecycle, browser_tool_session
 
     cdp_url, _port = chrome_cdp
     monkeypatch.setenv("BROWSER_CDP_URL", cdp_url)
     task_ids = ("pytest-action-a", "pytest-action-b")
     page_url = _interactive_page_url()
-    for task_id in task_ids:
-        result = json.loads(browser_tool.browser_navigate(page_url, task_id=task_id))
-        assert result["success"] is True, result
-    first = supervisor_registry.get(task_ids[0])
-    second = supervisor_registry.get(task_ids[1])
-    assert first is not None and second is not None
-    assert first.page_target_id() != second.page_target_id()
-
     try:
+        for task_id in task_ids:
+            result = json.loads(browser_tool.browser_navigate(page_url, task_id=task_id))
+            assert result["success"] is True, result
+        first = supervisor_registry.get(task_ids[0])
+        second = supervisor_registry.get(task_ids[1])
+        assert first is not None and second is not None
+        assert first.page_target_id() != second.page_target_id()
+
         with ThreadPoolExecutor(max_workers=2) as pool:
             click_future = pool.submit(
                 browser_tool_session._run_browser_command,
@@ -334,7 +312,7 @@ def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry)
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(task_id="pytest-2", cdp_url=cdp_url)
 
-    _fire_on_page(cdp_url, "setTimeout(() => alert('PYTEST-MAIN-ALERT'), 50)")
+    _fire_on_page(supervisor, "setTimeout(() => alert('PYTEST-MAIN-ALERT'), 50)")
     dialogs = _wait_for_dialog(supervisor)
     assert dialogs, "no dialog detected"
     d = dialogs[0]
@@ -354,7 +332,7 @@ def test_iframe_contentwindow_alert(chrome_cdp, supervisor_registry):
     supervisor = supervisor_registry.get_or_start(task_id="pytest-3", cdp_url=cdp_url)
 
     _fire_on_page(
-        cdp_url,
+        supervisor,
         "setTimeout(() => document.querySelector('#inner').contentWindow.alert('PYTEST-IFRAME'), 50)",
     )
     dialogs = _wait_for_dialog(supervisor)
@@ -372,7 +350,7 @@ def test_prompt_dialog_with_response_text(chrome_cdp, supervisor_registry):
 
     # Fire a prompt and stash the answer on window
     _fire_on_page(
-        cdp_url,
+        supervisor,
         "setTimeout(() => { window.__promptResult = prompt('give me a token', 'default-x'); }, 50)",
     )
     dialogs = _wait_for_dialog(supervisor)
@@ -392,7 +370,7 @@ def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(task_id="pytest-tool", cdp_url=cdp_url)
 
-    _fire_on_page(cdp_url, "setTimeout(() => alert('PYTEST-TOOL-END2END'), 50)")
+    _fire_on_page(supervisor, "setTimeout(() => alert('PYTEST-TOOL-END2END'), 50)")
     assert _wait_for_dialog(supervisor), "no dialog detected via wait_for_dialog"
 
     r = json.loads(browser_dialog(action="dismiss", task_id="pytest-tool"))
@@ -437,7 +415,7 @@ def test_evaluate_runtime_unserializable_value(chrome_cdp, supervisor_registry):
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(task_id="pytest-eval-5", cdp_url=cdp_url)
 
-    _fire_on_page(cdp_url, "void 0")
+    _fire_on_page(supervisor, "void 0")
     time.sleep(0.5)
 
     out = supervisor.evaluate_runtime("Infinity")
