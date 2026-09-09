@@ -358,6 +358,54 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
             browser_tool_lifecycle._cleanup_single_browser_session(task_id)
 
 
+
+@pytest.mark.skipif(
+    not shutil.which("agent-browser") and not shutil.which("npx"),
+    reason="agent-browser integration requires agent-browser or npx",
+)
+def test_new_foreign_page_cannot_steal_follow_up_action(chrome_cdp, supervisor_registry, monkeypatch, tmp_path):
+    """A new tab between browser commands cannot become this task's action target."""
+    from tools import browser_tool, browser_tool_lifecycle, browser_tool_session
+    from tools.browser_supervisor import _schedule
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("browser:\n  allow_private_urls: true\n", encoding="utf-8")
+    cdp_url, _port = chrome_cdp
+    monkeypatch.setenv("BROWSER_CDP_URL", cdp_url)
+    task_id = "pytest-new-foreign-page"
+    try:
+        navigated = json.loads(browser_tool.browser_navigate(_interactive_page_url(), task_id=task_id))
+        assert navigated["success"] is True, navigated
+        snapshot = json.loads(browser_tool.browser_snapshot(task_id=task_id))
+        assert snapshot["success"] is True, snapshot
+        supervisor = supervisor_registry.get(task_id)
+        assert supervisor is not None
+        created = _schedule(
+            supervisor._cdp("Target.createTarget", {"url": _interactive_page_url()}),
+            supervisor._loop, timeout=5,
+        )
+        foreign_target = created["result"]["targetId"]
+        assert foreign_target != supervisor.page_target_id()
+        inventory = browser_tool_session._run_browser_command(task_id, "tab", ["list"])
+        assert inventory["success"] is True, inventory
+        assert len(inventory["data"]["tabs"]) == 1, inventory
+        clicked = browser_tool_session._run_browser_command(task_id, "click", ["#owned-click"])
+        assert clicked["success"] is True, clicked
+        assert supervisor.evaluate_runtime("document.title").get("result") == "clicked"
+        attached = _schedule(
+            supervisor._cdp("Target.attachToTarget", {"targetId": foreign_target, "flatten": True}),
+            supervisor._loop, timeout=5,
+        )
+        foreign_title = _schedule(
+            supervisor._cdp("Runtime.evaluate", {"expression": "document.title", "returnByValue": True},
+                            session_id=attached["result"]["sessionId"]),
+            supervisor._loop, timeout=5,
+        )
+        assert foreign_title["result"]["result"]["value"] == "interactive"
+    finally:
+        browser_tool_lifecycle._cleanup_single_browser_session(task_id)
+
+
 def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry):
     """alert() in the main frame surfaces and can be dismissed via the sync API."""
     cdp_url, _port = chrome_cdp
