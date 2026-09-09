@@ -86,6 +86,7 @@ def chrome_cdp(tmp_path):
             "--headless=new",
             "--disable-gpu",
             "--site-per-process",  # force OOPIFs for cross-origin iframes
+            "about:blank",  # avoid browser-owned new-tab content and background renderers
         ],
         stdout=subprocess.DEVNULL,
         stderr=stderr,
@@ -298,6 +299,9 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
         for task_id in all_task_ids:
             result = json.loads(browser_tool.browser_navigate(page_url, task_id=task_id))
             assert result["success"] is True, result
+            assert result["title"] == "interactive", result
+            assert "Click" in result["snapshot"], result
+            assert browser_tool._last_active_session_key[task_id] == task_id
         snapshots = {}
         for task_id in all_task_ids:
             snapshot = json.loads(browser_tool.browser_snapshot(task_id=task_id))

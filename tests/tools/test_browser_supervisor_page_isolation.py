@@ -270,6 +270,7 @@ def test_navigate_page_uses_owned_session_and_activates_target(monkeypatch):
 
 @pytest.mark.parametrize("command,args,payload", [
     ("click", ["@e1"], {"clicked": "@e1"}),
+    ("open", ["https://example.test"], {"url": "https://example.test", "title": "Owned"}),
     ("snapshot", ["-c"], {"snapshot": "- button Click", "refs": {"e1": {"role": "button"}}}),
 ])
 @pytest.mark.parametrize("previous,close_succeeds", [(None, True), ("owned", True), ("old", True), ("old", False)])
@@ -311,124 +312,50 @@ def test_cdp_command_uses_owned_endpoint_and_replaces_stale_daemon(
     supervisor.page_command_endpoint.assert_called_once_with(timeout=10)
 
 
-def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):
-    """browser_navigate on a CDP session must not fall through to unbound CLI."""
+@pytest.mark.parametrize("final_url,blocked", [
+    ("https://example.test/owned", False),
+    ("http://169.254.169.254/latest/meta-data/", True),
+])
+def test_browser_navigate_cdp_preserves_response_and_redirect_guard(monkeypatch, final_url, blocked):
+    """CDP navigation must retain the common response and redirect safety contract."""
     import json
-    import tools.browser_tool as bt
-    import tools.browser_tool_session as _session
-    import tools.browser_tool_cdp as _cdp
-    import tools.browser_tool_cloud as _cloud
-    import tools.browser_supervisor as bsup
+    from tools import browser_supervisor, browser_tool, browser_tool_cdp, browser_tool_cloud, browser_tool_session
 
-    session = {
-        "session_name": "cdp_test",
-        "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
-        "page_target_id": "TASK-TAB",
-        "_first_nav": True,
-    }
+    session = {"session_name": "cdp_test", "cdp_url": "ws://127.0.0.1:9222/browser",
+               "page_target_id": "OWNED", "_first_nav": False}
+    supervisor = MagicMock()
+    supervisor.page_target_id.return_value = "OWNED"
+    supervisor.navigate_page.return_value = {"ok": True, "target_id": "OWNED"}
+    monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda key: supervisor)
+    monkeypatch.setattr(browser_tool_session, "_get_session_info", lambda key: session)
+    monkeypatch.setattr(browser_tool_cdp, "_ensure_cdp_supervisor", lambda key: None)
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool_cloud, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(browser_tool_cloud, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(browser_tool, "check_website_access", lambda url: None)
+    monkeypatch.setattr(browser_tool, "_last_active_session_key", {})
+    calls = []
 
-    class _Sup:
-        def page_target_id(self):
-            return "TASK-TAB"
+    def command(task_id, operation, args, **kwargs):
+        calls.append((task_id, operation, args))
+        if operation == "open":
+            return {"success": True, "data": {"url": final_url, "title": "Owned"}}
+        assert operation == "snapshot"
+        return {"success": True, "data": {"snapshot": "- button Click", "refs": {"e1": {"role": "button"}}}}
 
-        def navigate_page(self, url, timeout=30.0):
-            return {
-                "ok": True,
-                "target_id": "TASK-TAB",
-                "frame_id": "f1",
-                "loader_id": "l1",
-            }
+    monkeypatch.setattr(browser_tool_session, "_run_browser_command", command)
+    result = json.loads(browser_tool.browser_navigate("https://example.test", task_id="task"))
 
-    class _Reg:
-        def get(self, task_id):
-            return _Sup()
-
-    monkeypatch.setattr(_session, "_get_session_info", lambda key: session)
-    monkeypatch.setattr(_cdp, "_ensure_cdp_supervisor", lambda task_id: None)
-    monkeypatch.setattr(_session, "_bind_session_page_target", lambda tid, info: None)
-    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(_cloud, "_is_local_backend", lambda: False)
-    monkeypatch.setattr(_cloud, "_allow_private_urls", lambda: True)
-    monkeypatch.setattr(bt, "_is_always_blocked_url", lambda url: False)
-    monkeypatch.setattr(bt, "check_website_access", lambda url: None)
-    monkeypatch.setattr(_cloud, "_get_cloud_provider", lambda: None)
-    monkeypatch.setattr(bt, "_maybe_start_recording", lambda key: None)
-    monkeypatch.setattr(bt, "_sensitive_query_param_name", lambda url: None)
-    monkeypatch.setattr(bt, "_normalize_url_for_request", lambda url: url)
-    monkeypatch.setattr(bsup, "SUPERVISOR_REGISTRY", _Reg())
-
-    def _fail_cli(*a, **k):
-        raise AssertionError("must not call agent-browser CLI for CDP navigate")
-
-    monkeypatch.setattr(_session, "_run_browser_command", _fail_cli)
-
-    out = json.loads(bt.browser_navigate("https://www.baidu.com", task_id="sess-A"))
-    assert out["success"] is True
-    assert out["page_target_id"] == "TASK-TAB"
-    assert out["via"] == "cdp_supervisor"
-
-
-def test_two_task_navigate_paths_keep_distinct_targets(monkeypatch):
-    """Two task_ids must route navigate to different page targets."""
-    import json
-    import tools.browser_tool as bt
-    import tools.browser_tool_session as _session
-    import tools.browser_tool_cdp as _cdp
-    import tools.browser_tool_cloud as _cloud
-    import tools.browser_supervisor as bsup
-
-    sessions = {
-        "sess-A": {
-            "session_name": "cdp_a",
-            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
-            "_first_nav": True,
-        },
-        "sess-B": {
-            "session_name": "cdp_b",
-            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/x",
-            "_first_nav": True,
-        },
-    }
-    seen: Dict[str, str] = {}
-
-    class _Sup:
-        def __init__(self, tid: str, tab: str):
-            self.tid = tid
-            self.tab = tab
-
-        def page_target_id(self):
-            return self.tab
-
-        def navigate_page(self, url, timeout=30.0):
-            seen[self.tid] = self.tab
-            return {"ok": True, "target_id": self.tab, "frame_id": "f"}
-
-    class _Reg:
-        def get(self, task_id):
-            tab = "TAB-A" if task_id == "sess-A" else "TAB-B"
-            return _Sup(task_id, tab)
-
-    monkeypatch.setattr(_session, "_get_session_info", lambda key: sessions[key])
-    monkeypatch.setattr(_cdp, "_ensure_cdp_supervisor", lambda task_id: None)
-    monkeypatch.setattr(_session, "_bind_session_page_target", lambda tid, info: None)
-    monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr(_cloud, "_is_local_backend", lambda: False)
-    monkeypatch.setattr(_cloud, "_allow_private_urls", lambda: True)
-    monkeypatch.setattr(bt, "_is_always_blocked_url", lambda url: False)
-    monkeypatch.setattr(bt, "check_website_access", lambda url: None)
-    monkeypatch.setattr(_cloud, "_get_cloud_provider", lambda: None)
-    monkeypatch.setattr(bt, "_maybe_start_recording", lambda key: None)
-    monkeypatch.setattr(bt, "_sensitive_query_param_name", lambda url: None)
-    monkeypatch.setattr(bt, "_normalize_url_for_request", lambda url: url)
-    monkeypatch.setattr(bsup, "SUPERVISOR_REGISTRY", _Reg())
-    monkeypatch.setattr(
-        _session,
-        "_run_browser_command",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no CLI")),
-    )
-
-    a = json.loads(bt.browser_navigate("https://www.baidu.com", task_id="sess-A"))
-    b = json.loads(bt.browser_navigate("https://www.sina.com.cn", task_id="sess-B"))
-    assert a["page_target_id"] == "TAB-A"
-    assert b["page_target_id"] == "TAB-B"
-    assert seen == {"sess-A": "TAB-A", "sess-B": "TAB-B"}
+    if blocked:
+        assert result["success"] is False, result
+        assert "cloud metadata endpoint" in result["error"]
+        assert calls == [("task", "open", ["https://example.test"]), ("task", "open", ["about:blank"])]
+        assert browser_tool._last_active_session_key == {}
+    else:
+        assert result["success"] is True, result
+        assert result["url"] == final_url
+        assert result["title"] == "Owned"
+        assert result["snapshot"] == "- button Click"
+        assert result["element_count"] == 1
+        assert browser_tool._last_active_session_key == {"task": "task"}
+        assert calls == [("task", "open", ["https://example.test"]), ("task", "snapshot", ["-c"])]
