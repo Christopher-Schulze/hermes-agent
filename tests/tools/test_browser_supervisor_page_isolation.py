@@ -21,7 +21,6 @@ def _make_supervisor() -> Any:
     sup._page_session_id = None
     sup._page_target_id = None
     sup._owns_page_target = False
-    sup._child_sessions = {}
     sup._loop = None
     return sup
 
