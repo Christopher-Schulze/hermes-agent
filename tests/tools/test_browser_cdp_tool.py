@@ -757,15 +757,13 @@ def test_frame_id_no_supervisor_attached():
 
 def test_frame_id_not_found_in_supervisor():
     """browser_cdp with frame_id not in supervisor state → error."""
-    from types import SimpleNamespace
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
 
-    snap = SimpleNamespace(frame_tree={"top": {"frame_id": "other"}, "children": []})
-    supervisor = SimpleNamespace(
-        snapshot=lambda: snap,
-        _state_lock=__import__("threading").Lock(),
-        _frames={},
-        _loop=None,
+    supervisor = CDPSupervisor("default", "ws://localhost:9222")
+    supervisor.snapshot = lambda: SupervisorSnapshot(
+        pending_dialogs=(), recent_dialogs=(),
+        frame_tree={"top": {"frame_id": "other"}, "children": []},
+        active=True, cdp_url="ws://localhost:9222", task_id="default",
     )
     with SUPERVISOR_REGISTRY._lock:
         SUPERVISOR_REGISTRY._by_task["default"] = supervisor
@@ -787,17 +785,13 @@ def test_frame_id_not_found_in_supervisor():
 
 def test_frame_id_same_origin_no_session():
     """browser_cdp with frame_id that has no session_id → error about OOPIF."""
-    from types import SimpleNamespace
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
 
-    snap = SimpleNamespace(
-        frame_tree={"top": {"frame_id": "top-1"}, "children": [{"frame_id": "child-1"}]}
-    )
-    supervisor = SimpleNamespace(
-        snapshot=lambda: snap,
-        _state_lock=__import__("threading").Lock(),
-        _frames={},
-        _loop=None,
+    supervisor = CDPSupervisor("default", "ws://localhost:9222")
+    supervisor.snapshot = lambda: SupervisorSnapshot(
+        pending_dialogs=(), recent_dialogs=(),
+        frame_tree={"top": {"frame_id": "top-1"}, "children": [{"frame_id": "child-1"}]},
+        active=True, cdp_url="ws://localhost:9222", task_id="default",
     )
     with SUPERVISOR_REGISTRY._lock:
         SUPERVISOR_REGISTRY._by_task["default"] = supervisor
@@ -819,17 +813,13 @@ def test_frame_id_same_origin_no_session():
 
 def test_frame_id_supervisor_loop_not_running():
     """browser_cdp with frame_id but supervisor loop is None → error."""
-    from types import SimpleNamespace
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
 
-    snap = SimpleNamespace(
-        frame_tree={"top": {}, "children": [{"frame_id": "f1", "session_id": "s1"}]}
-    )
-    supervisor = SimpleNamespace(
-        snapshot=lambda: snap,
-        _state_lock=__import__("threading").Lock(),
-        _frames={},
-        _loop=None,
+    supervisor = CDPSupervisor("default", "ws://localhost:9222")
+    supervisor.snapshot = lambda: SupervisorSnapshot(
+        pending_dialogs=(), recent_dialogs=(),
+        frame_tree={"top": {}, "children": [{"frame_id": "f1", "session_id": "s1"}]},
+        active=True, cdp_url="ws://localhost:9222", task_id="default",
     )
     with SUPERVISOR_REGISTRY._lock:
         SUPERVISOR_REGISTRY._by_task["default"] = supervisor
