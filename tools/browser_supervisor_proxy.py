@@ -35,7 +35,7 @@ class OwnedPageProxy:
                     self._handle, "127.0.0.1", 0, origins=[None],
                     max_size=50 * 1024 * 1024, close_timeout=1,
                 )
-                port = self._server.sockets[0].getsockname()[1]
+                port = next(iter(self._server.sockets)).getsockname()[1]
                 self.url = f"ws://127.0.0.1:{port}{self._path}"
             return self.url
 
