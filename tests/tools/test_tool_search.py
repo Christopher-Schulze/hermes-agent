@@ -937,18 +937,23 @@ class TestDeferredCallSchemaProbe:
 
 
 class TestSafeIntFloat:
-    def test_safe_int_valid(self):
-        from tools.tool_search import _safe_int
-        assert _safe_int("42", 0) == 42
-        assert _safe_int(42, 0) == 42
+    def test_clamped_int_valid(self):
+        from tools.tool_search import _clamped_int
+        assert _clamped_int("42", 0, 0, 100) == 42
+        assert _clamped_int(42, 0, 0, 100) == 42
 
-    def test_safe_int_fallback_on_type_error(self):
-        from tools.tool_search import _safe_int
-        assert _safe_int(None, 7) == 7
+    def test_clamped_int_fallback_on_type_error(self):
+        from tools.tool_search import _clamped_int
+        assert _clamped_int(None, 7, 0, 100) == 7
 
-    def test_safe_int_fallback_on_value_error(self):
-        from tools.tool_search import _safe_int
-        assert _safe_int("abc", 7) == 7
+    def test_clamped_int_fallback_on_value_error(self):
+        from tools.tool_search import _clamped_int
+        assert _clamped_int("abc", 7, 0, 100) == 7
+
+    def test_clamped_int_clamps_to_bounds(self):
+        from tools.tool_search import _clamped_int
+        assert _clamped_int(500, 7, 0, 100) == 100
+        assert _clamped_int(-5, 7, 0, 100) == 0
 
     def test_safe_float_valid(self):
         from tools.tool_search import _safe_float
@@ -1011,13 +1016,13 @@ class TestConfigParsingExtra:
 
 class TestClassifySource:
     def test_unknown_tool_returns_other(self):
-        from tools.tool_search import _classify_source
+        from tools.tool_search_catalog import _classify_source
         source, source_name = _classify_source("xx_nonexistent_tool")
         assert source == "other"
         assert source_name == ""
 
     def test_registered_plugin_tool(self):
-        from tools.tool_search import _classify_source
+        from tools.tool_search_catalog import _classify_source
         from tools.registry import registry
         def _h(args, **kw):
             return "{}"
@@ -1032,7 +1037,7 @@ class TestClassifySource:
         assert source_name == "testplugin"
 
     def test_registered_mcp_tool(self):
-        from tools.tool_search import _classify_source
+        from tools.tool_search_catalog import _classify_source
         from tools.registry import registry
         def _h(args, **kw):
             return "{}"
@@ -1049,12 +1054,12 @@ class TestClassifySource:
 
 class TestSearchCatalogEdgeCases:
     def test_empty_catalog_returns_empty(self):
-        from tools.tool_search import search_catalog
+        from tools.tool_search_catalog import search_catalog
         assert search_catalog([], "query", limit=5) == []
 
     def test_limit_zero_returns_empty(self):
-        from tools.tool_search import search_catalog
-        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        from tools.tool_search_catalog import search_catalog
+        from tools.tool_search_catalog import CatalogEntry, _tokenize, _entry_search_text
         d = _td("test_tool", "test description")
         e = CatalogEntry(name="test_tool", description="test", schema=d,
                          source="mcp", source_name="mcp-test")
@@ -1062,8 +1067,8 @@ class TestSearchCatalogEdgeCases:
         assert search_catalog([e], "test", limit=0) == []
 
     def test_empty_query_returns_empty(self):
-        from tools.tool_search import search_catalog
-        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        from tools.tool_search_catalog import search_catalog
+        from tools.tool_search_catalog import CatalogEntry, _tokenize, _entry_search_text
         d = _td("test_tool", "test description")
         e = CatalogEntry(name="test_tool", description="test", schema=d,
                          source="mcp", source_name="mcp-test")
@@ -1071,8 +1076,8 @@ class TestSearchCatalogEdgeCases:
         assert search_catalog([e], "", limit=5) == []
 
     def test_whitespace_query_returns_empty(self):
-        from tools.tool_search import search_catalog
-        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        from tools.tool_search_catalog import search_catalog
+        from tools.tool_search_catalog import CatalogEntry, _tokenize, _entry_search_text
         d = _td("test_tool", "test description")
         e = CatalogEntry(name="test_tool", description="test", schema=d,
                          source="mcp", source_name="mcp-test")
@@ -1103,13 +1108,14 @@ class TestBridgeToolSchemas:
         props = desc_schema["function"]["parameters"]["properties"]
         assert "names" in props
 
-    def test_call_schema_has_name_and_arguments(self):
+    def test_call_schema_has_calls_with_name_and_arguments(self):
         from tools.tool_search import bridge_tool_schemas, TOOL_CALL_NAME
         schemas = bridge_tool_schemas(10)
         call_schema = next(s for s in schemas if s["function"]["name"] == TOOL_CALL_NAME)
         props = call_schema["function"]["parameters"]["properties"]
-        assert "name" in props
-        assert "arguments" in props
+        calls_item = props["calls"]["items"]
+        assert "name" in calls_item["properties"]
+        assert "arguments" in calls_item["properties"]
 
     def test_deferred_count_in_description(self):
         from tools.tool_search import bridge_tool_schemas, TOOL_SEARCH_NAME
@@ -1167,15 +1173,16 @@ class TestBuildCatalogEdgeCases:
 
 
 class TestSharedToolRecord:
-    def test_caps_description_at_400(self):
+    def test_caps_description_at_500(self):
         from tools.tool_search import _shared_tool_record, CatalogEntry
-        long_desc = "x" * 500
+        long_desc = "x" * 600
         e = CatalogEntry(
             name="test", description=long_desc,
             schema={}, source="mcp", source_name="mcp-test",
         )
         record = _shared_tool_record(e)
-        assert len(record["description"]) <= 400
+        assert len(record["description"]) <= 501
+        assert record["description"].endswith("…")
 
     def test_none_description_becomes_empty(self):
         from tools.tool_search import _shared_tool_record, CatalogEntry
@@ -1356,37 +1363,37 @@ class TestAssembleToolDefsActivation:
 
 class TestTokenizeEdgeCases:
     def test_empty_string(self):
-        from tools.tool_search import _tokenize
+        from tools.tool_search_catalog import _tokenize
         assert _tokenize("") == []
 
     def test_none_input(self):
-        from tools.tool_search import _tokenize
+        from tools.tool_search_catalog import _tokenize
         assert _tokenize(None) == []  # type: ignore[arg-type]
 
     def test_only_non_alphanumeric(self):
-        from tools.tool_search import _tokenize
+        from tools.tool_search_catalog import _tokenize
         assert _tokenize("---...___") == []
 
     def test_mixed_case_lowercased(self):
-        from tools.tool_search import _tokenize
+        from tools.tool_search_catalog import _tokenize
         tokens = _tokenize("Hello WORLD")
         assert tokens == ["hello", "world"]
 
 
 class TestEntrySearchText:
     def test_includes_name_words(self):
-        from tools.tool_search import _entry_search_text
+        from tools.tool_search_catalog import _entry_search_text
         text = _entry_search_text(_td("my_cool_tool", "desc"))
         assert "my" in text
         assert "cool" in text
         assert "tool" in text
 
     def test_includes_param_names(self):
-        from tools.tool_search import _entry_search_text
+        from tools.tool_search_catalog import _entry_search_text
         text = _entry_search_text(_td("test", "desc", {"query": {"type": "string"}}))
         assert "query" in text
 
     def test_empty_function(self):
-        from tools.tool_search import _entry_search_text
+        from tools.tool_search_catalog import _entry_search_text
         text = _entry_search_text({})
         assert text.strip() == ""
