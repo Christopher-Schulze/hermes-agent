@@ -138,10 +138,10 @@ def test_load_policy_config_reports_yaml_and_io_errors(tmp_path, monkeypatch):
     readable = tmp_path / "readable.yaml"
     readable.write_text("{}\n", encoding="utf-8")
 
-    def fail_open(*args, **kwargs):
+    def fail_read_text(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr("builtins.open", fail_open)
+    monkeypatch.setattr("pathlib.Path.read_text", fail_read_text)
     with pytest.raises(website_policy.WebsitePolicyError, match="Failed to read config"):
         website_policy._load_policy_config(readable)
 
