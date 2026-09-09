@@ -9,11 +9,18 @@ import yaml
 import tools.website_policy as website_policy
 
 
+def _reset_cache() -> None:
+    """Reset the module cache state directly; invalidate_cache is plugin-compat only."""
+    website_policy._cached_policy = None
+    website_policy._cached_policy_path = None
+    website_policy._cached_policy_time = 0.0
+
+
 @pytest.fixture(autouse=True)
 def reset_website_policy_cache():
-    website_policy.invalidate_cache()
+    _reset_cache()
     yield
-    website_policy.invalidate_cache()
+    _reset_cache()
 
 
 def write_config(path: Path, payload: object) -> None:
@@ -261,7 +268,7 @@ def test_default_policy_cache_is_profile_aware_and_invalidation_reloads(tmp_path
         second_home / "config.yaml",
         {"security": {"website_blocklist": {"enabled": True, "domains": ["reloaded.test"]}}},
     )
-    website_policy.invalidate_cache()
+    _reset_cache()
     assert website_policy.load_website_blocklist()["rules"][0]["pattern"] == "reloaded.test"
 
 
