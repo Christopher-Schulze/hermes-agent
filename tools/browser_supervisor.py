@@ -401,11 +401,12 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return True
 
     async def _close_ws(self) -> None:
-        """Drop our dedicated tab, then detach and close the WebSocket, swallowing close errors."""
-        # Drop our dedicated tab before closing the socket so shared headed
-        # browsers do not accumulate blank pages per session (#69727).
-        with contextlib.suppress(Exception):
-            await self._close_owned_page_target()
+        """Close the transport; only an explicit stop releases the owned page."""
+        # A transport reconnect must reattach the same document. Explicit stop
+        # closes it while the reader can still receive Target.closeTarget's reply.
+        if self._stop_requested:
+            with contextlib.suppress(Exception):
+                await self._close_owned_page_target()
         ws, self._ws = self._ws, None
         if ws is not None:
             with contextlib.suppress(Exception):
