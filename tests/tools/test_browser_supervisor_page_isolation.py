@@ -303,7 +303,16 @@ def test_page_target_tab_ref_matches_agent_browser_target_order(monkeypatch):
     assert methods == ["Target.getTargets"]
 
 
-def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "command, arguments, payload, encoded",
+    [
+        ("click", ["@e1"], {"clicked": "@e1"}, "click @e1"),
+        ("snapshot", ["-c"], {"snapshot": "- button Click", "refs": {"e1": {"role": "button"}}}, "snapshot -c"),
+    ],
+)
+def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(
+    monkeypatch, tmp_path, command, arguments, payload, encoded,
+):
     """Click/type-style operations must select the owned tab in the same daemon call."""
     import json
     from unittest.mock import MagicMock, mock_open
@@ -323,7 +332,7 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(monkeypat
     process.returncode = 0
     stdout = json.dumps([
         {"command": ["tab", "t2"], "success": True, "result": []},
-        {"command": ["click", "@e1"], "success": True, "result": {"clicked": "@e1"}},
+        {"command": [command, *arguments], "success": True, "result": payload},
     ])
 
     def capture_popen(cmd_parts, browser_env, task_socket_dir, command):
@@ -350,9 +359,9 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(monkeypat
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
     monkeypatch.setattr("builtins.open", mock_open(read_data=stdout))
 
-    result = _session._run_browser_command("task", "click", ["@e1"])
+    result = _session._run_browser_command("task", command, arguments)
 
-    assert result == {"success": True, "data": {"clicked": "@e1"}}
+    assert result == {"success": True, "data": payload}
     assert captured == [[
         "/usr/bin/agent-browser",
         "--cdp",
@@ -360,7 +369,7 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(monkeypat
         "--json",
         "batch",
         "tab t2",
-        "click @e1",
+        encoded,
     ]]
 
 
