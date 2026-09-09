@@ -67,8 +67,8 @@ async def test_attach_creates_dedicated_page_even_when_pages_exist():
     async def _noop_bridge(_session_id: str) -> None:
         return None
 
-    sup._cdp = fake_cdp  # type: ignore[method-assign]
-    sup._install_dialog_bridge = _noop_bridge  # type: ignore[method-assign]
+    sup._cdp = fake_cdp
+    sup._install_dialog_bridge = _noop_bridge
 
     await sup._attach_initial_page()
 
@@ -113,6 +113,7 @@ async def test_two_supervisors_get_distinct_page_targets():
                 create_index["i"] += 1
                 return {"result": {"targetId": tid}}
             if method == "Target.attachToTarget":
+                assert params is not None
                 attached.append(params["targetId"])
                 return {"result": {"sessionId": f"SID-{params['targetId']}"}}
             if method == "Target.getTargets":
@@ -128,8 +129,8 @@ async def test_two_supervisors_get_distinct_page_targets():
         async def _noop_bridge(_session_id: str) -> None:
             return None
 
-        sup._cdp = fake_cdp  # type: ignore[method-assign]
-        sup._install_dialog_bridge = _noop_bridge  # type: ignore[method-assign]
+        sup._cdp = fake_cdp
+        sup._install_dialog_bridge = _noop_bridge
         await sup._attach_initial_page()
         return sup, attached
 
@@ -171,6 +172,7 @@ async def test_reconnect_reuses_owned_page_target():
         if method == "Target.createTarget":
             raise AssertionError("must not create a new tab when owned page still exists")
         if method == "Target.attachToTarget":
+            assert params is not None
             assert params["targetId"] == "OWNED-TAB"
             return {"result": {"sessionId": "SID-REUSE"}}
         return {"result": {}}
@@ -178,8 +180,8 @@ async def test_reconnect_reuses_owned_page_target():
     async def _noop_bridge(_session_id: str) -> None:
         return None
 
-    sup._cdp = fake_cdp  # type: ignore[method-assign]
-    sup._install_dialog_bridge = _noop_bridge  # type: ignore[method-assign]
+    sup._cdp = fake_cdp
+    sup._install_dialog_bridge = _noop_bridge
 
     await sup._attach_initial_page()
 
@@ -231,8 +233,8 @@ def test_navigate_page_uses_owned_session_and_activates_target(monkeypatch):
     monkeypatch.setattr(
         "agent.async_utils.safe_schedule_threadsafe", schedule
     )
-    sup._loop = _Loop()  # type: ignore[assignment]
-    sup._cdp = fake_cdp  # type: ignore[method-assign]
+    sup._loop = _Loop()
+    sup._cdp = fake_cdp
 
     result = sup.navigate_page("https://example.com/search")
 
@@ -292,8 +294,8 @@ def test_page_target_tab_ref_matches_agent_browser_target_order(monkeypatch):
             loop_local.close()
 
     monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", schedule)
-    sup._loop = _Loop()  # type: ignore[assignment]
-    sup._cdp = fake_cdp  # type: ignore[method-assign]
+    sup._loop = _Loop()
+    sup._cdp = fake_cdp
 
     result = sup.page_target_tab_ref()
 
