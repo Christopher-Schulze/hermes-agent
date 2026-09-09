@@ -32,6 +32,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -278,10 +279,12 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
         for task_id in all_task_ids:
             result = json.loads(browser_tool.browser_navigate(page_url, task_id=task_id))
             assert result["success"] is True, result
+        snapshots = {}
         for task_id in all_task_ids:
             snapshot = json.loads(browser_tool.browser_snapshot(task_id=task_id))
             assert snapshot["success"] is True, snapshot
             assert "Click" in snapshot["snapshot"]
+            snapshots[task_id] = snapshot["snapshot"]
 
         if retire_page:
             tab_refs = {}
@@ -298,18 +301,25 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
         first = supervisor_registry.get(task_ids[0])
         second = supervisor_registry.get(task_ids[1])
         assert first is not None and second is not None
+        click_selector, fill_selector = "#owned-click", "#owned-input"
+        if not retire_page:
+            click_ref = re.search(r"button[^\n]*\[ref=(e\d+)\]", snapshots[task_ids[0]])
+            fill_ref = re.search(r"textbox[^\n]*\[ref=(e\d+)\]", snapshots[task_ids[1]])
+            assert click_ref is not None, snapshots[task_ids[0]]
+            assert fill_ref is not None, snapshots[task_ids[1]]
+            click_selector, fill_selector = f"@{click_ref[1]}", f"@{fill_ref[1]}"
         with ThreadPoolExecutor(max_workers=2) as pool:
             click_future = pool.submit(
                 browser_tool_session._run_browser_command,
                 task_ids[0],
                 "click",
-                ["#owned-click"],
+                [click_selector],
             )
             fill_future = pool.submit(
                 browser_tool_session._run_browser_command,
                 task_ids[1],
                 "fill",
-                ["#owned-input", "task-b"],
+                [fill_selector, "task-b"],
             )
             click_result = click_future.result(timeout=30)
             fill_result = fill_future.result(timeout=30)
