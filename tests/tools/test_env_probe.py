@@ -1,6 +1,7 @@
 """Tests for tools/env_probe.py — local Python toolchain probe."""
 
 import sys
+import threading
 
 import pytest
 
@@ -532,3 +533,89 @@ class TestCacheBehaviour:
                             lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         result = env_probe.get_environment_probe_line()
         assert result == ""
+
+
+class TestAsyncWarm:
+    """Warm calls share one worker and resets reject stale generations."""
+
+    @pytest.mark.parametrize("line", ["", "Python toolchain: warmed."])
+    def test_repeated_warm_reuses_running_worker_and_ready_cache(self, monkeypatch, line):
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def probe():
+            calls.append(threading.current_thread())
+            started.set()
+            release.wait(timeout=10)
+            return line
+
+        monkeypatch.setattr(env_probe, "_build_probe_line", probe)
+        env_probe.warm_environment_probe_async()
+        worker = env_probe._PROBE_THREAD
+        try:
+            assert started.wait(timeout=5)
+            assert worker is not None
+            for _ in range(3):
+                env_probe.warm_environment_probe_async()
+                assert env_probe._PROBE_THREAD is worker
+            assert calls == [worker]
+            assert not env_probe._PROBE_DONE.is_set()
+
+            release.set()
+            worker.join(timeout=5)
+            assert not worker.is_alive()
+            assert env_probe._PROBE_DONE.is_set()
+            assert env_probe.get_environment_probe_line() == line
+            env_probe.warm_environment_probe_async()
+            assert env_probe._PROBE_THREAD is worker
+            assert calls == [worker]
+        finally:
+            release.set()
+            if worker is not None:
+                worker.join(timeout=5)
+
+    def test_reset_starts_fresh_worker_and_discards_late_result(self, monkeypatch):
+        started = threading.Event()
+        release = threading.Event()
+
+        def old_probe():
+            started.set()
+            release.wait(timeout=10)
+            return "Python toolchain: stale."
+
+        monkeypatch.setattr(env_probe, "_build_probe_line", old_probe)
+        monkeypatch.setattr(env_probe, "_PROBE_WAIT_TIMEOUT", 0.05)
+        env_probe.warm_environment_probe_async()
+        old_worker = env_probe._PROBE_THREAD
+        fresh_worker = None
+        try:
+            assert started.wait(timeout=5)
+            assert old_worker is not None
+            assert env_probe.get_environment_probe_line() == ""
+            assert env_probe._WAIT_ALREADY_TIMED_OUT
+            generation = env_probe._PROBE_GEN
+            env_probe._reset_cache_for_tests()
+            assert env_probe._PROBE_GEN == generation + 1
+            assert env_probe._CACHED_LINE is None
+            assert env_probe._PROBE_THREAD is None
+            assert not env_probe._PROBE_DONE.is_set()
+            assert not env_probe._WAIT_ALREADY_TIMED_OUT
+
+            monkeypatch.setattr(env_probe, "_build_probe_line", lambda: "Python toolchain: fresh.")
+            env_probe.warm_environment_probe_async()
+            fresh_worker = env_probe._PROBE_THREAD
+            assert fresh_worker is not None and fresh_worker is not old_worker
+            fresh_worker.join(timeout=5)
+            assert not fresh_worker.is_alive()
+            assert env_probe.get_environment_probe_line() == "Python toolchain: fresh."
+            release.set()
+            old_worker.join(timeout=5)
+            assert not old_worker.is_alive()
+            assert env_probe._PROBE_DONE.is_set()
+            assert env_probe.get_environment_probe_line() == "Python toolchain: fresh."
+        finally:
+            release.set()
+            for worker in (old_worker, fresh_worker):
+                if worker is not None:
+                    worker.join(timeout=5)
