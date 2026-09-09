@@ -278,27 +278,36 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
         for task_id in all_task_ids:
             result = json.loads(browser_tool.browser_navigate(page_url, task_id=task_id))
             assert result["success"] is True, result
-        first = supervisor_registry.get(task_ids[0])
-        second = supervisor_registry.get(task_ids[1])
-        assert first is not None and second is not None
         for task_id in all_task_ids:
             snapshot = json.loads(browser_tool.browser_snapshot(task_id=task_id))
             assert snapshot["success"] is True, snapshot
             assert "Click" in snapshot["snapshot"]
 
         if retire_page:
+            tab_refs = {}
+            for task_id in all_task_ids:
+                supervisor = supervisor_registry.get(task_id)
+                assert supervisor is not None
+                binding = supervisor.page_target_tab_ref()
+                assert binding["ok"] is True, binding
+                tab_refs[task_id] = int(binding["tab_ref"][1:])
+            retired_task = min(tab_refs, key=tab_refs.__getitem__)
+            task_ids = tuple(task_id for task_id in all_task_ids if task_id != retired_task)
             browser_tool_lifecycle._cleanup_single_browser_session(retired_task)
 
+        first = supervisor_registry.get(task_ids[0])
+        second = supervisor_registry.get(task_ids[1])
+        assert first is not None and second is not None
         with ThreadPoolExecutor(max_workers=2) as pool:
             click_future = pool.submit(
                 browser_tool_session._run_browser_command,
-                "pytest-action-a",
+                task_ids[0],
                 "click",
                 ["#owned-click"],
             )
             fill_future = pool.submit(
                 browser_tool_session._run_browser_command,
-                "pytest-action-b",
+                task_ids[1],
                 "fill",
                 ["#owned-input", "task-b"],
             )
