@@ -755,16 +755,16 @@ def test_frame_id_no_supervisor_attached():
     assert "No CDP supervisor" in result["error"]
 
 
-def test_frame_id_not_found_in_supervisor():
+def test_frame_id_not_found_in_supervisor(monkeypatch):
     """browser_cdp with frame_id not in supervisor state → error."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
 
     supervisor = CDPSupervisor("default", "ws://localhost:9222")
-    supervisor.snapshot = lambda: SupervisorSnapshot(
+    monkeypatch.setattr(supervisor, "snapshot", lambda: SupervisorSnapshot(
         pending_dialogs=(), recent_dialogs=(),
         frame_tree={"top": {"frame_id": "other"}, "children": []},
         active=True, cdp_url="ws://localhost:9222", task_id="default",
-    )
+    ))
     with SUPERVISOR_REGISTRY._lock:
         SUPERVISOR_REGISTRY._by_task["default"] = supervisor
 
@@ -783,16 +783,16 @@ def test_frame_id_not_found_in_supervisor():
             SUPERVISOR_REGISTRY._by_task.clear()
 
 
-def test_frame_id_same_origin_no_session():
+def test_frame_id_same_origin_no_session(monkeypatch):
     """browser_cdp with frame_id that has no session_id → error about OOPIF."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
 
     supervisor = CDPSupervisor("default", "ws://localhost:9222")
-    supervisor.snapshot = lambda: SupervisorSnapshot(
+    monkeypatch.setattr(supervisor, "snapshot", lambda: SupervisorSnapshot(
         pending_dialogs=(), recent_dialogs=(),
         frame_tree={"top": {"frame_id": "top-1"}, "children": [{"frame_id": "child-1"}]},
         active=True, cdp_url="ws://localhost:9222", task_id="default",
-    )
+    ))
     with SUPERVISOR_REGISTRY._lock:
         SUPERVISOR_REGISTRY._by_task["default"] = supervisor
 
@@ -811,16 +811,16 @@ def test_frame_id_same_origin_no_session():
             SUPERVISOR_REGISTRY._by_task.clear()
 
 
-def test_frame_id_supervisor_loop_not_running():
+def test_frame_id_supervisor_loop_not_running(monkeypatch):
     """browser_cdp with frame_id but supervisor loop is None → error."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY, CDPSupervisor, SupervisorSnapshot
 
     supervisor = CDPSupervisor("default", "ws://localhost:9222")
-    supervisor.snapshot = lambda: SupervisorSnapshot(
+    monkeypatch.setattr(supervisor, "snapshot", lambda: SupervisorSnapshot(
         pending_dialogs=(), recent_dialogs=(),
         frame_tree={"top": {}, "children": [{"frame_id": "f1", "session_id": "s1"}]},
         active=True, cdp_url="ws://localhost:9222", task_id="default",
-    )
+    ))
     with SUPERVISOR_REGISTRY._lock:
         SUPERVISOR_REGISTRY._by_task["default"] = supervisor
 
