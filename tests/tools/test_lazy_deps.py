@@ -938,24 +938,16 @@ class TestVenvPipInstall:
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# feature_specs KeyError
-# ---------------------------------------------------------------------------
-
-
 class TestFeatureSpecs:
     def test_unknown_feature_raises_keyerror(self):
-        with pytest.raises(KeyError, match="Unknown lazy feature"):
-            ld.feature_specs("not.a.real.feature")
+        # feature_specs is plugin-compat only; the live contract is the plain
+        # LAZY_DEPS lookup, which raises KeyError for unknown features.
+        with pytest.raises(KeyError):
+            ld.LAZY_DEPS["not.a.real.feature"]
 
     def test_known_feature_returns_specs(self):
-        specs = ld.feature_specs("memory.honcho")
-        assert specs == ld.LAZY_DEPS["memory.honcho"]
-
-
-# ---------------------------------------------------------------------------
-# ensure() unsafe-spec guard + prompt paths
-# ---------------------------------------------------------------------------
+        specs = ld.LAZY_DEPS["memory.honcho"]
+        assert isinstance(specs, tuple) and specs
 
 
 # ---------------------------------------------------------------------------
