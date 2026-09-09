@@ -92,6 +92,25 @@ async def test_attach_creates_dedicated_page_even_when_pages_exist():
 
 
 @pytest.mark.asyncio
+async def test_missing_created_target_id_never_adopts_a_shared_page():
+    """An invalid create response must fail instead of restoring the original shared-tab bug."""
+    sup = _make_supervisor()
+    methods = []
+
+    async def cdp(method, params=None, session_id=None, timeout=10.0):
+        methods.append(method)
+        if method == "Target.createTarget":
+            return {"result": {}}
+        return {"result": {"targetInfos": [{"targetId": "SHARED", "type": "page"}]}}
+
+    sup._cdp = cdp
+    with pytest.raises(RuntimeError, match="Target.createTarget returned no targetId"):
+        await sup._resolve_dedicated_page_target()
+    assert methods == ["Target.createTarget"]
+    assert sup._page_target_id is None
+
+
+@pytest.mark.asyncio
 async def test_two_supervisors_get_distinct_page_targets():
     """Simulates two Hermes sessions against one shared CDP browser."""
     created_ids = ["TAB-1", "TAB-2"]
@@ -249,58 +268,43 @@ def test_navigate_page_uses_owned_session_and_activates_target(monkeypatch):
     )
 
 
-def test_page_target_tab_ref_matches_agent_browser_target_order(monkeypatch):
-    """The tab ref must identify the owned target, not merely activate it."""
-    sup = _make_supervisor()
-    sup._active = True
-    sup._page_target_id = "TAB-OWNED"
-    methods: List[str] = []
+@pytest.mark.parametrize("owned_page", ["active", "listed", "missing"])
+def test_cdp_page_selection_uses_daemon_identity(monkeypatch, owned_page):
+    """Keep valid refs; otherwise select the actual daemon ID among identical URLs."""
+    import tools.browser_tool_session as session
 
-    async def fake_cdp(
-        method: str,
-        params: Optional[dict] = None,
-        session_id: Optional[str] = None,
-        timeout: float = 10.0,
-    ) -> dict:
-        methods.append(method)
-        if method == "Target.getTargets":
-            return {
-                "result": {
-                    "targetInfos": [
-                        {"targetId": "DEVTOOLS", "type": "page", "url": "devtools://devtools"},
-                        {"targetId": "TAB-OTHER", "type": "page", "url": "https://other.example"},
-                        {"targetId": "TAB-OWNED", "type": "page", "url": "about:blank"},
-                    ]
-                }
-            }
-        return {"result": {}}
+    prefix = ["agent-browser", "--cdp", "ws://browser.test/cdp"]
+    responses = [{"success": True, "data": {"result": owned_page == "active"}}]
+    if owned_page != "active":
+        responses.append({"success": True, "data": {"tabs": [
+            {"tabId": "t4", "url": "https://same.test"},
+            {"tabId": "t9", "url": "https://same.test"},
+        ]}})
+        for matched in (False, owned_page == "listed"):
+            responses.append([
+                {"success": True, "result": {}},
+                {"success": True, "result": {"result": matched}},
+            ])
+    captured = []
 
-    class _Loop:
-        def is_running(self) -> bool:
-            return True
+    def collect(task_id, info, argv, command, engine, timeout):
+        captured.append(argv)
+        return responses.pop(0)
 
-    class _Fut:
-        def __init__(self, value):
-            self._value = value
-
-        def result(self, timeout=None):
-            return self._value
-
-    def schedule(coro, loop):
-        loop_local = asyncio.new_event_loop()
-        try:
-            return _Fut(loop_local.run_until_complete(coro))
-        finally:
-            loop_local.close()
-
-    monkeypatch.setattr("agent.async_utils.safe_schedule_threadsafe", schedule)
-    sup._loop = _Loop()
-    sup._cdp = fake_cdp
-
-    result = sup.page_target_tab_ref()
-
-    assert result == {"ok": True, "target_id": "TAB-OWNED", "tab_ref": "t2"}
-    assert methods == ["Target.getTargets"]
+    monkeypatch.setattr(session, "_spawn_and_collect", collect)
+    if owned_page == "missing":
+        with pytest.raises(RuntimeError, match="supervisor-owned CDP page is unavailable"):
+            session._select_cdp_page("task", {}, prefix, "marker", "auto", 10)
+    else:
+        session._select_cdp_page("task", {}, prefix, "marker", "auto", 10)
+    assert not responses
+    assert captured[0] == prefix + ["--json", "eval", 'globalThis["marker"] === true']
+    if owned_page == "active":
+        assert len(captured) == 1  # Switching even to the same tab would invalidate refs.
+    else:
+        assert captured[1] == prefix + ["--json", "tab", "list"]
+        assert [argv[-2] for argv in captured[2:]] == ["tab t4", "tab t9"]
+        assert all(argv[3:6] == ["--json", "batch", "--bail"] for argv in captured[2:])
 
 
 @pytest.mark.parametrize(
@@ -310,12 +314,16 @@ def test_page_target_tab_ref_matches_agent_browser_target_order(monkeypatch):
         ("snapshot", ["-c"], {"snapshot": "- button Click", "refs": {"e1": {"role": "button"}}}, "snapshot -c"),
     ],
 )
+@pytest.mark.parametrize("binding_succeeds", [True, False])
 def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(
-    monkeypatch, tmp_path, command, arguments, payload, encoded,
+    monkeypatch, tmp_path, command, arguments, payload, encoded, binding_succeeds,
 ):
     """Click/type-style operations must select the owned tab in the same daemon call."""
     import json
+    import shlex
     from unittest.mock import MagicMock, mock_open
+
+    import tools.browser_supervisor as supervisor_module
 
     import tools.browser_tool as browser_tool
     import tools.browser_tool_session as _session
@@ -330,10 +338,16 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(
     process = MagicMock()
     process.wait.return_value = 0
     process.returncode = 0
-    stdout = json.dumps([
-        {"command": ["tab", "t2"], "success": True, "result": []},
-        {"command": [command, *arguments], "success": True, "result": payload},
-    ])
+    batch_result = [{"command": ["eval", "binding-guard"], "success": binding_succeeds,
+                     "result": {"result": True}, "error": None if binding_succeeds else "page changed"}]
+    if binding_succeeds:
+        batch_result.append({"command": [command, *arguments], "success": True, "result": payload})
+    stdout = json.dumps(batch_result)
+    supervisor = MagicMock()
+    supervisor.page_target_id.return_value = "owned-target"
+    supervisor.evaluate_runtime.return_value = {"ok": True, "result": True}
+    monkeypatch.setattr(supervisor_module.SUPERVISOR_REGISTRY, "get", lambda _task_id: supervisor)
+    monkeypatch.setattr(_session.uuid, "uuid4", lambda: MagicMock(hex="bindingtest"))
 
     def capture_popen(cmd_parts, browser_env, task_socket_dir, command):
         captured.append(cmd_parts)
@@ -344,7 +358,7 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(
     monkeypatch.setattr(_session, "_browser_command_preflight", lambda: {"browser_cmd": "/usr/bin/agent-browser"})
     monkeypatch.setattr(_cdp, "_ensure_cdp_supervisor", lambda _task_id: None)
     monkeypatch.setattr(_session, "_bind_session_page_target", lambda _task_id, _info: None)
-    monkeypatch.setattr(_session, "_session_page_tab_ref", lambda _task_id, _info: "t2")
+    monkeypatch.setattr(_session, "_select_cdp_page", lambda *_args: None)
     monkeypatch.setattr(_session, "_agent_browser_command_env", lambda _dir: {})
     monkeypatch.setattr(_session, "_prepare_session_socket_dir", lambda _name: str(tmp_path))
     monkeypatch.setattr(_session, "_popen_agent_browser", capture_popen)
@@ -361,16 +375,23 @@ def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(
 
     result = _session._run_browser_command("task", command, arguments)
 
-    assert result == {"success": True, "data": payload}
-    assert captured == [[
-        "/usr/bin/agent-browser",
-        "--cdp",
-        "wss://browser.example/cdp",
-        "--json",
-        "batch",
-        "tab t2",
-        encoded,
-    ]]
+    if binding_succeeds:
+        assert result == {"success": True, "data": payload}
+        assert supervisor.evaluate_runtime.call_count == 1
+    else:
+        assert result == {"success": False, "error": "page changed"}
+        assert supervisor.evaluate_runtime.call_count == 2
+        assert supervisor.evaluate_runtime.call_args.args[0] == 'delete globalThis["__hermes_page_bindingtest"]'
+    assert len(captured) == 1
+    assert captured[0][:-2] == [
+        "/usr/bin/agent-browser", "--cdp", "wss://browser.example/cdp", "--json", "batch", "--bail",
+    ]
+    guard = shlex.split(captured[0][-2])
+    assert guard[0] == "eval"
+    assert 'globalThis["__hermes_page_bindingtest"]' in guard[1]
+    assert "delete " in guard[1]
+    assert "throw new Error" in guard[1]
+    assert captured[0][-1] == encoded
 
 
 def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):

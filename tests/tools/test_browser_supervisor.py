@@ -287,14 +287,20 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
             snapshots[task_id] = snapshot["snapshot"]
 
         if retire_page:
-            tab_refs = {}
+            from tools.browser_supervisor import _schedule
+
+            probe_supervisor = supervisor_registry.get(all_task_ids[0])
+            assert probe_supervisor is not None
+            targets = _schedule(
+                probe_supervisor._cdp("Target.getTargets"), probe_supervisor._loop, timeout=5,
+            )["result"]["targetInfos"]
+            target_order = {target["targetId"]: index for index, target in enumerate(targets)}
+            task_positions = {}
             for task_id in all_task_ids:
                 supervisor = supervisor_registry.get(task_id)
                 assert supervisor is not None
-                binding = supervisor.page_target_tab_ref()
-                assert binding["ok"] is True, binding
-                tab_refs[task_id] = int(binding["tab_ref"][1:])
-            retired_task = min(tab_refs, key=tab_refs.__getitem__)
+                task_positions[task_id] = target_order[supervisor.page_target_id()]
+            retired_task = min(task_positions, key=task_positions.__getitem__)
             task_ids = tuple(task_id for task_id in all_task_ids if task_id != retired_task)
             browser_tool_lifecycle._cleanup_single_browser_session(retired_task)
 
