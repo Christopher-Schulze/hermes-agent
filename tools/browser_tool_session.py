@@ -565,7 +565,7 @@ def _interpret_browser_command_output(command: str, stdout: str, stderr: str, re
         return {"success": False, "error": f"Non-JSON output from agent-browser for '{command}': {raw}"}
 
     # Empty snapshot content is a common sign of daemon/CDP issues.
-    if command == "snapshot" and parsed.get("success"):
+    if command == "snapshot" and isinstance(parsed, dict) and parsed.get("success"):
         snap_data = parsed.get("data", {})
         if not snap_data.get("snapshot") and not snap_data.get("refs"):
             _bt.logger.warning("snapshot returned empty content. Possible stale daemon or CDP connection issue. "
