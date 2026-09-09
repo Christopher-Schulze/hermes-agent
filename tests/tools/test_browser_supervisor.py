@@ -257,6 +257,23 @@ def test_two_supervisors_navigate_distinct_owned_pages(chrome_cdp, supervisor_re
 
     assert titles == ("owned-page-a", "owned-page-b")
 
+    # A transport reconnect must retain the owned page and its loaded document.
+    from tools.browser_supervisor import _schedule
+
+    target_id, session_id = first.page_target_id(), first._page_session_id
+    assert first._ws is not None
+    _schedule(first._ws.close(), first._loop, timeout=5)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if first.snapshot().active and first._page_session_id != session_id:
+            break
+        time.sleep(0.05)
+    assert first.snapshot().active
+    assert first._page_session_id != session_id
+    assert first.page_target_id() == target_id
+    assert first.evaluate_runtime("document.title").get("result") == "owned-page-a"
+    assert second.evaluate_runtime("document.title").get("result") == "owned-page-b"
+
 
 @pytest.mark.skipif(
     not shutil.which("agent-browser") and not shutil.which("npx"),

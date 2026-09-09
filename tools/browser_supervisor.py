@@ -89,7 +89,7 @@ class SupervisorSnapshot:
 
 class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     """One supervisor per (task_id, cdp_url) pair. ``start()`` spawns a daemon thread
-    running its own asyncio loop, connects, attaches to the first page target, enables
+    running its own asyncio loop, connects, attaches to its dedicated page target, enables
     domains and auto-attach. ``snapshot()`` / ``respond_to_dialog()`` / ``evaluate_runtime()``
     are sync, thread-safe bridges onto that loop; all CDP I/O lives on the loop."""
 
@@ -499,27 +499,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             self._owns_page_target = True
             return self._page_target_id
 
-        # Rare backend: createTarget rejected or returned nothing. Fall back to
-        # an existing page only as last resort so attach can still succeed.
-        resp = await self._cdp("Target.getTargets")
-        targets = (resp.get("result") or {}).get("targetInfos") or []
-        page_target = next(
-            (t for t in targets if isinstance(t, dict) and t.get("type") == "page"),
-            None,
-        )
-        if page_target is None or not page_target.get("targetId"):
-            raise RuntimeError(
-                "CDP Target.createTarget returned no targetId and no page target exists"
-            )
-        self._page_target_id = str(page_target["targetId"])
-        self._owns_page_target = False
-        logger.warning(
-            "CDP supervisor %s: createTarget unavailable; reusing shared page %s "
-            "(multi-session tab isolation degraded)",
-            self.task_id,
-            self._page_target_id[:16],
-        )
-        return self._page_target_id
+        raise RuntimeError("CDP Target.createTarget returned no targetId; cannot create an isolated page")
 
     async def _close_owned_page_target(self) -> None:
         """Close the blank page we created for this task_id, if any."""

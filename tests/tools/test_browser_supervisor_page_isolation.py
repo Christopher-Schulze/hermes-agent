@@ -274,7 +274,8 @@ def test_cdp_page_selection_uses_daemon_identity(monkeypatch, owned_page):
     import tools.browser_tool_session as session
 
     prefix = ["agent-browser", "--cdp", "ws://browser.test/cdp"]
-    responses = [{"success": True, "data": {"result": owned_page == "active"}}]
+    responses: list[dict[str, Any] | list[dict[str, Any]]] = [
+        {"success": True, "data": {"result": owned_page == "active"}}]
     if owned_page != "active":
         responses.append({"success": True, "data": {"tabs": [
             {"tabId": "t4", "url": "https://same.test"},
@@ -318,7 +319,7 @@ def test_cdp_page_selection_uses_daemon_identity(monkeypatch, owned_page):
 def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(
     monkeypatch, tmp_path, command, arguments, payload, encoded, binding_succeeds,
 ):
-    """Click/type-style operations must select the owned tab in the same daemon call."""
+    """The owned-page guard must stop a failed binding before the actual action."""
     import json
     import shlex
     from unittest.mock import MagicMock, mock_open
