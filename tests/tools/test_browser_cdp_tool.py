@@ -662,17 +662,17 @@ def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
 
 def test_resolve_cdp_endpoint_returns_stripped_url(monkeypatch):
     """_resolve_cdp_endpoint strips whitespace from the override."""
-    import tools.browser_tool as bt
+    import tools.browser_tool_cdp as bt_cdp
 
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: "  ws://localhost:9222  ")
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: "  ws://localhost:9222  ")
     assert browser_cdp_tool._resolve_cdp_endpoint() == "ws://localhost:9222"
 
 
 def test_resolve_cdp_endpoint_returns_empty_when_none(monkeypatch):
     """_resolve_cdp_endpoint returns '' when override is None."""
-    import tools.browser_tool as bt
+    import tools.browser_tool_cdp as bt_cdp
 
-    monkeypatch.setattr(bt, "_get_cdp_override", lambda: None)
+    monkeypatch.setattr(bt_cdp, "_get_cdp_override", lambda: None)
     assert browser_cdp_tool._resolve_cdp_endpoint() == ""
 
 
