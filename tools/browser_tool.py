@@ -700,47 +700,6 @@ def _attach_auto_snapshot(response: Dict[str, Any], nav_session_key: str) -> Non
         logger.debug("Auto-snapshot after navigate failed: %s", e)
 
 
-def _navigate_via_supervisor_page(
-    task_id: str, url: str, session_info: Dict[str, Any]
-) -> Optional[Dict[str, Any]]:
-    """Navigate using the supervisor's dedicated page when on CDP.
-
-    Returns a result dict on success/handled-failure, or ``None`` to fall
-    through to the agent-browser CLI path (local sessions, no supervisor).
-    """
-    if not session_info.get("cdp_url"):
-        return None
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
-
-        _cdp._ensure_cdp_supervisor(task_id)
-        _session._bind_session_page_target(task_id, session_info)
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
-        if supervisor is None or not supervisor.page_target_id():
-            return None
-        nav = supervisor.navigate_page(url)
-        if not nav.get("ok"):
-            return {
-                "success": False,
-                "error": nav.get("error") or "supervisor Page.navigate failed",
-                "page_target_id": session_info.get("page_target_id"),
-            }
-        return {
-            "success": True,
-            "url": url,
-            "page_target_id": nav.get("target_id") or session_info.get("page_target_id"),
-            "frame_id": nav.get("frame_id"),
-            "via": "cdp_supervisor",
-        }
-    except Exception as exc:
-        logger.debug(
-            "supervisor navigate failed for task=%s, falling back to CLI: %s",
-            task_id,
-            exc,
-        )
-        return None
-
-
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to ``url``; JSON with title, compact snapshot and, on first nav, stealth features.
     Hybrid routing decides BEFORE the safety checks whether this URL goes to a local sidecar
@@ -770,16 +729,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if is_first_nav:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
-
-    # CDP multi-session: navigate on the supervisor-owned page, not whichever
-    # tab agent-browser considers active (#69727).
-    supervisor_result = _navigate_via_supervisor_page(
-        nav_session_key, url, session_info
-    )
-    if supervisor_result is not None:
-        if is_first_nav and session_info.get("features"):
-            supervisor_result["stealth"] = session_info.get("features")
-        return json.dumps(supervisor_result)
 
     result = _session._run_browser_command(nav_session_key, "open", [url],
                                   timeout=_get_open_command_timeout(first_open=is_first_nav))

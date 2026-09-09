@@ -127,7 +127,6 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._page_target_id: Optional[str] = None
         self._owns_page_target: bool = False
         self._page_proxy: Optional[OwnedPageProxy] = None
-        self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
@@ -237,40 +236,6 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return await self._page_proxy.start()
 
         return _schedule(endpoint(), loop, timeout=timeout)
-
-    def activate_owned_page(self, timeout: float = 5.0) -> Dict[str, Any]:
-        """Bring this supervisor's dedicated page to the front (shared CDP).
-
-        Required before agent-browser CLI commands against a multi-session
-        headed browser so navigate/click hit our tab, not another session's.
-        """
-        loop = self._loop
-        if loop is None or not loop.is_running():
-            return {"ok": False, "error": "supervisor loop is not running"}
-        with self._state_lock:
-            if not self._active:
-                return {"ok": False, "error": "supervisor is not active"}
-            target_id = self._page_target_id
-        if not target_id:
-            return {"ok": False, "error": "supervisor has no dedicated page target"}
-
-        async def _do_activate() -> None:
-            await self._cdp(
-                "Target.activateTarget",
-                {"targetId": target_id},
-                timeout=timeout,
-            )
-
-        try:
-            from agent.async_utils import safe_schedule_threadsafe
-
-            fut = safe_schedule_threadsafe(_do_activate(), loop)
-            if fut is None:
-                return {"ok": False, "error": "Browser supervisor loop unavailable"}
-            fut.result(timeout=timeout + 1)
-        except Exception as exc:
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-        return {"ok": True, "target_id": target_id}
 
     def navigate_page(self, url: str, timeout: float = 30.0) -> Dict[str, Any]:
         """Navigate this supervisor's dedicated page via live CDP Page.navigate.

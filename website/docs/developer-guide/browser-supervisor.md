@@ -69,7 +69,8 @@ frozen snapshot without awaiting.
 ### Task-owned pages
 
 Each CDP task creates a dedicated page and reuses that target after a transport
-reconnect. Navigation uses its attached page session directly. The task's
+reconnect. Navigation and follow-up actions share the normal browser command
+path, preserving redirect checks, response metadata and snapshots. The task's
 agent-browser daemon connects through a loopback WebSocket view that exposes
 only this page in target inventories and discovery events. New tabs from other
 tasks cannot change the daemon's active page between commands. Attached child
