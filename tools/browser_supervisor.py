@@ -575,8 +575,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         assert self._ws is not None
         try:
             async for raw in self._ws:
-                if self._stop_requested:
-                    break
+                # Shutdown still needs command replies to close the owned page.
+                # The transport close ends this reader after cleanup completes.
                 try:
                     msg = json.loads(raw)
                 except Exception:
@@ -590,7 +590,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         fut.set_exception(RuntimeError(f"CDP error on id={msg['id']}: {msg['error']}"))
                     else:
                         fut.set_result(msg)
-                elif handler := self._EVENT_HANDLERS.get(msg.get("method")):
+                elif not self._stop_requested and (handler := self._EVENT_HANDLERS.get(msg.get("method"))):
                     result = handler(self, msg.get("params", {}), msg.get("sessionId"))
                     if result is not None:
                         await result
