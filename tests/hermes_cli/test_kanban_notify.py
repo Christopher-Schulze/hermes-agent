@@ -844,6 +844,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
     real_pdf = tmp_path / "real.pdf"
     real_pdf.write_bytes(b"%PDF-fake")
+    missing_pdf = tmp_path / "missing.pdf"
 
     conn = kbc.connect()
     try:
@@ -855,6 +856,18 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     import os
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
+        rejected = json.loads(kt._handle_complete({
+            "summary": "one real, one missing artifact",
+            "artifacts": [str(real_pdf), str(missing_pdf)],
+        }))
+        assert "still in-flight" in rejected["error"]
+        with kbc.connect() as conn:
+            task = kb.get_task(conn, tid)
+            assert task is not None
+            assert task.status == "ready"
+            assert not any(event.kind == "completed" for event in kb.list_events(conn, tid))
+        assert real_pdf.read_bytes() == b"%PDF-fake"
+
         result = kt._handle_complete({
             "summary": "one real artifact",
             "artifacts": [str(real_pdf)],
@@ -877,7 +890,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         payload = json.loads(row["payload"] or "{}")
         payload["artifacts"] = [
             str(real_pdf),
-            "/tmp/definitely-does-not-exist.pdf",
+            str(missing_pdf),
         ]
         conn.execute(
             "UPDATE task_events SET payload = ? WHERE id = ?",
