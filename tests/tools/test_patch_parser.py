@@ -807,6 +807,8 @@ class TestCrlfPatchBody:
         assert result.success is True, getattr(result, "error", None)
         assert "\r" not in fo.files["f.py"]
         assert fo.files["f.py"] == "def f():\n    x = 2\n    return x\n"
+
+
 class TestV4ABomRoundTrip:
     """V4A patches must not silently strip a UTF-8 BOM on UPDATE.
 
@@ -930,9 +932,9 @@ class TestParseEdgeCases:
         ops, err = parse_v4a_patch(patch)
         assert err is None
         assert len(ops) == 1
-        # The \-marker must not appear as a hunk line
-        prefixes = [l.prefix for l in ops[0].hunks[0].lines]
-        assert "\\" not in prefixes
+        assert [(line.prefix, line.content) for line in ops[0].hunks[0].lines] == [
+            (" ", "ctx"), ("-", "old"), ("+", "new"),
+        ]
 
     def test_implicit_context_line(self):
         """A hunk line without a recognized prefix is treated as context."""
@@ -967,8 +969,13 @@ class TestParseEdgeCases:
         assert err is None
         assert len(ops) == 2
         assert ops[0].operation == OperationType.UPDATE
+        assert ops[0].file_path == "a.py"
         assert len(ops[0].hunks) == 1
+        assert [(line.prefix, line.content) for line in ops[0].hunks[0].lines] == [
+            (" ", "ctx"), ("-", "old"), ("+", "new"),
+        ]
         assert ops[1].operation == OperationType.MOVE
+        assert ops[1].file_path == "a.py"
         assert ops[1].new_path == "b.py"
 
 
@@ -984,17 +991,11 @@ class TestApplyMove:
         ops, err = parse_v4a_patch(patch)
         assert err is None
 
-        class FakeFileOps:
-            def read_file_raw(self, path):
-                if path == "new.py":
-                    return SimpleNamespace(content=None, error="not found")
-                return SimpleNamespace(content="x", error=None)
-            def move_file(self, src, dst):
-                return SimpleNamespace(error=None)
-
-        result = apply_v4a_operations(ops, FakeFileOps())
+        file_ops = _DictFileOps({"old.py": "x"})
+        result = apply_v4a_operations(ops, file_ops)
         assert result.success is True
-        assert "old.py -> new.py" in result.files_modified[0]
+        assert result.files_modified == ["old.py -> new.py"]
+        assert file_ops.files == {"new.py": "x"}
 
     def test_move_failure(self):
         patch = (
@@ -1015,6 +1016,7 @@ class TestApplyMove:
 
         result = apply_v4a_operations(ops, FakeFileOps())
         assert result.success is False
+        assert result.error is not None
         assert "Failed to move" in result.error
 
 
@@ -1037,6 +1039,7 @@ class TestApplyAddDeleteErrors:
 
         result = apply_v4a_operations(ops, FakeFileOps())
         assert result.success is False
+        assert result.error is not None
         assert "disk full" in result.error
 
     def test_delete_delete_error(self):
@@ -1056,6 +1059,7 @@ class TestApplyAddDeleteErrors:
 
         result = apply_v4a_operations(ops, FakeFileOps())
         assert result.success is False
+        assert result.error is not None
         assert "permission denied" in result.error
 
 
@@ -1083,4 +1087,5 @@ class TestApplyUpdateWriteError:
 
         result = apply_v4a_operations(ops, FakeFileOps())
         assert result.success is False
+        assert result.error is not None
         assert "read-only filesystem" in result.error
