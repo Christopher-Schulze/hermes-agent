@@ -268,131 +268,47 @@ def test_navigate_page_uses_owned_session_and_activates_target(monkeypatch):
     )
 
 
-@pytest.mark.parametrize("owned_page", ["active", "listed", "missing"])
-def test_cdp_page_selection_uses_daemon_identity(monkeypatch, owned_page):
-    """Keep valid refs; otherwise select the actual daemon ID among identical URLs."""
-    import tools.browser_tool_session as session
-
-    prefix = ["agent-browser", "--cdp", "ws://browser.test/cdp"]
-    responses: list[dict[str, Any] | list[dict[str, Any]]] = [
-        {"success": True, "data": {"result": owned_page == "active"}}]
-    if owned_page != "active":
-        responses.append({"success": True, "data": {"tabs": [
-            {"tabId": "t4", "url": "https://same.test"},
-            {"tabId": "t9", "url": "https://same.test"},
-        ]}})
-        for matched in (False, owned_page == "listed"):
-            responses.append([
-                {"success": True, "result": {}},
-                {"success": True, "result": {"result": matched}},
-            ])
-    captured = []
-
-    def collect(task_id, info, argv, command, engine, timeout):
-        captured.append(argv)
-        return responses.pop(0)
-
-    monkeypatch.setattr(session, "_spawn_and_collect", collect)
-    if owned_page == "missing":
-        with pytest.raises(RuntimeError, match="supervisor-owned CDP page is unavailable"):
-            session._select_cdp_page("task", {}, prefix, "marker", "auto", 10)
-    else:
-        session._select_cdp_page("task", {}, prefix, "marker", "auto", 10)
-    assert not responses
-    assert captured[0] == prefix + ["--json", "eval", 'globalThis["marker"] === true']
-    if owned_page == "active":
-        assert len(captured) == 1  # Switching even to the same tab would invalidate refs.
-    else:
-        assert captured[1] == prefix + ["--json", "tab", "list"]
-        assert [argv[-2] for argv in captured[2:]] == ["tab t4", "tab t9"]
-        assert all(argv[3:6] == ["--json", "batch", "--bail"] for argv in captured[2:])
-
-
-@pytest.mark.parametrize(
-    "command, arguments, payload, encoded",
-    [
-        ("click", ["@e1"], {"clicked": "@e1"}, "click @e1"),
-        ("snapshot", ["-c"], {"snapshot": "- button Click", "refs": {"e1": {"role": "button"}}}, "snapshot -c"),
-    ],
-)
-@pytest.mark.parametrize("binding_succeeds", [True, False])
-def test_cdp_follow_up_command_binds_target_inside_agent_browser_batch(
-    monkeypatch, tmp_path, command, arguments, payload, encoded, binding_succeeds,
+@pytest.mark.parametrize("command,args,payload", [
+    ("click", ["@e1"], {"clicked": "@e1"}),
+    ("snapshot", ["-c"], {"snapshot": "- button Click", "refs": {"e1": {"role": "button"}}}),
+])
+@pytest.mark.parametrize("previous,close_succeeds", [(None, True), ("owned", True), ("old", True), ("old", False)])
+def test_cdp_command_uses_owned_endpoint_and_replaces_stale_daemon(
+    monkeypatch, command, args, payload, previous, close_succeeds,
 ):
-    """The owned-page guard must stop a failed binding before the actual action."""
-    import json
-    import shlex
-    from unittest.mock import MagicMock, mock_open
+    """Keep valid refs on the same endpoint; never reuse a daemon bound to a retired target."""
+    from tools import browser_supervisor, browser_tool_session
 
-    import tools.browser_supervisor as supervisor_module
-
-    import tools.browser_tool as browser_tool
-    import tools.browser_tool_session as _session
-    import tools.browser_tool_cdp as _cdp
-    import tools.browser_tool_cloud as _cloud
-
-    session = {
-        "session_name": "cdp-task",
-        "cdp_url": "wss://browser.example/cdp",
-    }
-    captured: List[List[str]] = []
-    process = MagicMock()
-    process.wait.return_value = 0
-    process.returncode = 0
-    batch_result = [{"command": ["eval", "binding-guard"], "success": binding_succeeds,
-                     "result": {"result": True}, "error": None if binding_succeeds else "page changed"}]
-    if binding_succeeds:
-        batch_result.append({"command": [command, *arguments], "success": True, "result": payload})
-    stdout = json.dumps(batch_result)
     supervisor = MagicMock()
-    supervisor.page_target_id.return_value = "owned-target"
-    supervisor.evaluate_runtime.return_value = {"ok": True, "result": True}
-    monkeypatch.setattr(supervisor_module.SUPERVISOR_REGISTRY, "get", lambda _task_id: supervisor)
-    monkeypatch.setattr(_session.uuid, "uuid4", lambda: MagicMock(hex="bindingtest"))
+    supervisor.page_target_id.return_value = "target"
+    supervisor.page_command_endpoint.return_value = "ws://127.0.0.1/owned"
+    monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+    session = {"session_name": "task", "cdp_url": "wss://browser.test/remote"}
+    if previous is not None:
+        session["_page_command_endpoint"] = f"ws://127.0.0.1/{previous}"
+    calls = []
 
-    def capture_popen(cmd_parts, browser_env, task_socket_dir, command):
-        captured.append(cmd_parts)
-        return process
+    def collect(task_id, info, argv, operation, engine, timeout):
+        calls.append((argv, operation))
+        if operation == "close":
+            return {"success": close_succeeds, "error": "close failed"}
+        return {"success": True, "data": payload}
 
-    monkeypatch.setattr(_session, "_get_session_info", lambda _task_id: session)
-    monkeypatch.setattr(_session, "_agent_browser_argv", lambda cmd: [cmd])
-    monkeypatch.setattr(_session, "_browser_command_preflight", lambda: {"browser_cmd": "/usr/bin/agent-browser"})
-    monkeypatch.setattr(_cdp, "_ensure_cdp_supervisor", lambda _task_id: None)
-    monkeypatch.setattr(_session, "_bind_session_page_target", lambda _task_id, _info: None)
-    monkeypatch.setattr(_session, "_select_cdp_page", lambda *_args: None)
-    monkeypatch.setattr(_session, "_agent_browser_command_env", lambda _dir: {})
-    monkeypatch.setattr(_session, "_prepare_session_socket_dir", lambda _name: str(tmp_path))
-    monkeypatch.setattr(_session, "_popen_agent_browser", capture_popen)
-    monkeypatch.setattr(_session, "_read_command_output_files", lambda *_args: (stdout, ""))
-    monkeypatch.setattr(_session, "_unlink_command_output_files", lambda *_args: None)
-    monkeypatch.setattr(_session, "_apply_chromium_sandbox_args", lambda _env: None)
-    monkeypatch.setattr(_session, "_handle_browser_command_timeout", lambda *_args: None)
-    import tools.browser_tool_cloud as _cloud
-    monkeypatch.setattr(_cloud, "_get_browser_engine", lambda: "auto")
-    monkeypatch.setattr(browser_tool, "_safe_command_timeout", lambda: 10)
-    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
-    monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
-    monkeypatch.setattr("builtins.open", mock_open(read_data=stdout))
-
-    result = _session._run_browser_command("task", command, arguments)
-
-    if binding_succeeds:
-        assert result == {"success": True, "data": payload}
-        assert supervisor.evaluate_runtime.call_count == 1
+    monkeypatch.setattr(browser_tool_session, "_spawn_and_collect", collect)
+    result = browser_tool_session._run_cdp_page_command(
+        "task", session, ["agent-browser", "--cdp", session["cdp_url"]], command, args, "auto", 10,
+    )
+    if previous == "old" and not close_succeeds:
+        assert result == {"success": False, "error": "close failed"}
+        assert session["_page_command_endpoint"] == "ws://127.0.0.1/old"
+        assert [operation for _, operation in calls] == ["close"]
     else:
-        assert result == {"success": False, "error": "page changed"}
-        assert supervisor.evaluate_runtime.call_count == 2
-        assert supervisor.evaluate_runtime.call_args.args[0] == 'delete globalThis["__hermes_page_bindingtest"]'
-    assert len(captured) == 1
-    assert captured[0][:-2] == [
-        "/usr/bin/agent-browser", "--cdp", "wss://browser.example/cdp", "--json", "batch", "--bail",
-    ]
-    guard = shlex.split(captured[0][-2])
-    assert guard[0] == "eval"
-    assert 'globalThis["__hermes_page_bindingtest"]' in guard[1]
-    assert "delete " in guard[1]
-    assert "throw new Error" in guard[1]
-    assert captured[0][-1] == encoded
+        assert result == {"success": True, "data": payload}
+        assert session["_page_command_endpoint"] == "ws://127.0.0.1/owned"
+        assert [operation for _, operation in calls] == (["close", command] if previous == "old" else [command])
+        assert calls[-1][0][-len(args)-1:] == [command, *args]
+    assert all(argv[:4] == ["agent-browser", "--cdp", "ws://127.0.0.1/owned", "--json"] for argv, _ in calls)
+    supervisor.page_command_endpoint.assert_called_once_with(timeout=10)
 
 
 def test_browser_navigate_cdp_uses_supervisor_page(monkeypatch):

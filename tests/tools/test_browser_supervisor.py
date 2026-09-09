@@ -358,7 +358,6 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
             browser_tool_lifecycle._cleanup_single_browser_session(task_id)
 
 
-
 @pytest.mark.skipif(
     not shutil.which("agent-browser") and not shutil.which("npx"),
     reason="agent-browser integration requires agent-browser or npx",
@@ -402,8 +401,23 @@ def test_new_foreign_page_cannot_steal_follow_up_action(chrome_cdp, supervisor_r
             supervisor._loop, timeout=5,
         )
         assert foreign_title["result"]["result"]["value"] == "interactive"
+        endpoint = supervisor.page_command_endpoint()
+
+        async def reject_foreign_attachment():
+            from websockets.asyncio.client import connect
+
+            async with connect(endpoint, proxy=None) as connection:
+                await connection.send(json.dumps({"id": 1, "method": "Target.attachToTarget",
+                                                  "params": {"targetId": foreign_target, "flatten": True}}))
+                response = json.loads(await asyncio.wait_for(connection.recv(), 5))
+                assert "error" in response, response
+                assert "sessionId" not in response.get("result", {}), response
+
+        asyncio.run(reject_foreign_attachment())
     finally:
         browser_tool_lifecycle._cleanup_single_browser_session(task_id)
+    assert supervisor._thread is not None
+    assert not supervisor._thread.is_alive(), "session cleanup left the supervisor running"
 
 
 def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry):

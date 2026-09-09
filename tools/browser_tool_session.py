@@ -7,7 +7,6 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 import json
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import threading
@@ -340,118 +339,39 @@ def _bind_session_page_target(task_id: str, session_info: Dict[str, Any]) -> Non
         )
 
 
-# Each task has a private agent-browser daemon. Serialize its selection and
-# command so concurrent calls cannot change that daemon's active page.
-_CDP_PAGE_BOUND_COMMANDS = frozenset({
-    "back",
-    "click",
-    "console",
-    "errors",
-    "eval",
-    "fill",
-    "open",
-    "press",
-    "record",
-    "screenshot",
-    "scroll",
-    "snapshot",
-})
+# A daemon caches snapshot refs and its CDP endpoint across commands.
 _cdp_binding_locks: Dict[str, threading.Lock] = {}
 _cdp_binding_locks_guard = threading.Lock()
 
 
 def _cdp_binding_lock(session_name: str) -> threading.Lock:
-    """Return the command lock for one task's private agent-browser daemon."""
+    """Serialize commands and endpoint replacement for a task's private daemon."""
     with _cdp_binding_locks_guard:
         return _cdp_binding_locks.setdefault(session_name, threading.Lock())
-
-
-def _select_cdp_page(
-    task_id: str, session_info: Dict[str, Any], prefix: List[str],
-    marker: str, engine: str, timeout: int,
-) -> None:
-    """Find the marked page using the daemon's real IDs, preserving an existing binding."""
-    probe_args = ["eval", f"globalThis[{json.dumps(marker)}] === true"]
-    probe = _spawn_and_collect(
-        task_id, session_info, prefix + ["--json", *probe_args], "binding-probe", engine, timeout,
-    )
-    if not probe.get("success"):
-        raise RuntimeError(probe.get("error") or "Could not inspect the active CDP page")
-    if (probe.get("data") or {}).get("result") is True:
-        return
-
-    listed = _spawn_and_collect(
-        task_id, session_info, prefix + ["--json", "tab", "list"], "binding-tabs", engine, timeout,
-    )
-    if not listed.get("success"):
-        raise RuntimeError(listed.get("error") or "Could not list CDP pages")
-    tabs = (listed.get("data") or {}).get("tabs")
-    if not isinstance(tabs, list):
-        raise RuntimeError("agent-browser returned no CDP tab inventory")
-    for tab in tabs:
-        if not isinstance(tab, dict) or not isinstance(tab.get("tabId"), str):
-            continue
-        commands = [shlex.join(["tab", tab["tabId"]]), shlex.join(probe_args)]
-        result = _spawn_and_collect(
-            task_id, session_info, prefix + ["--json", "batch", "--bail", *commands],
-            "binding-probe", engine, timeout,
-        )
-        if (isinstance(result, list) and len(result) == 2
-                and all(isinstance(item, dict) and item.get("success") for item in result)
-                and (result[-1].get("result") or {}).get("result") is True):
-            return
-    raise RuntimeError("The supervisor-owned CDP page is unavailable in agent-browser")
 
 
 def _run_cdp_page_command(
     task_id: str, session_info: Dict[str, Any], prefix: List[str],
     command: str, args: List[str], engine: str, timeout: int,
 ) -> Dict[str, Any]:
-    """Select by live page identity and abort before the action if that identity changes."""
+    """Connect the driver to an immutable view of the supervisor-owned target."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
     if supervisor is None or not supervisor.page_target_id():
         return {"success": False, "error": "No supervisor-owned CDP page is available"}
-    marker = f"__hermes_page_{uuid.uuid4().hex}"
-    key = json.dumps(marker)
-    marked = supervisor.evaluate_runtime(
-        f"Object.defineProperty(globalThis, {key}, {{value: true, configurable: true}}); true",
-        timeout=min(timeout, 10),
-    )
-    if not marked.get("ok") or marked.get("result") is not True:
-        return {"success": False, "error": marked.get("error") or "Could not identify the owned CDP page"}
-    needs_cleanup = True
-    try:
-        _select_cdp_page(task_id, session_info, prefix, marker, engine, timeout)
-        guard = (
-            f"(() => {{ const owned = globalThis[{key}] === true; delete globalThis[{key}]; "
-            'if (!owned) throw new Error("CDP page ownership changed"); return true; })()'
-        )
-        commands = [shlex.join(["eval", guard]), shlex.join([command, *(str(arg) for arg in args)])]
-        result = _spawn_and_collect(
-            task_id, session_info, prefix + ["--json", "batch", "--bail", *commands],
-            command, engine, timeout,
-        )
-        if not isinstance(result, list):
-            if not result.get("success"):
-                return result
-            return {"success": False, "error": "agent-browser returned no bound command batch"}
-        if result and isinstance(result[0], dict) and result[0].get("success"):
-            needs_cleanup = False  # The guard removed the marker before the action.
-        if (len(result) != 2
-                or not all(isinstance(item, dict) and item.get("success") for item in result)):
-            error = next(
-                (item.get("error") for item in result if isinstance(item, dict) and item.get("error")),
-                "The bound CDP command did not complete",
-            )
-            return {"success": False, "error": error}
-        return {"success": True, "data": result[-1].get("result") or {}}
-    finally:
-        if needs_cleanup:
-            removed = supervisor.evaluate_runtime(f"delete globalThis[{key}]", timeout=min(timeout, 5))
-            if not removed.get("ok"):
-                _bt.logger.debug("Could not clear CDP page marker for task=%s", task_id)
+    endpoint = supervisor.page_command_endpoint(timeout=min(timeout, 10))
+    prefix = [*prefix[:-1], endpoint]
+    previous_endpoint = session_info.get("_page_command_endpoint")
+    if previous_endpoint is not None and previous_endpoint != endpoint:
+        # agent-browser ignores a changed --cdp URL while its daemon is running.
+        closed = _spawn_and_collect(task_id, session_info, prefix + ["--json", "close"],
+                                    "close", engine, timeout)
+        if not closed.get("success"):
+            return closed
+    session_info["_page_command_endpoint"] = endpoint
+    return _spawn_and_collect(task_id, session_info, prefix + ["--json", command, *args],
+                              command, engine, timeout)
 
 
 def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any], task_socket_dir: str) -> None:
@@ -735,7 +655,7 @@ def _run_browser_command(
 
     prefix = _agent_browser_argv(browser_cmd) + backend_args
     try:
-        if session_info.get("cdp_url") and command in _CDP_PAGE_BOUND_COMMANDS:
+        if session_info.get("cdp_url") and command != "close":
             with _cdp_binding_lock(str(session_info["session_name"])):
                 result = _run_cdp_page_command(
                     task_id, session_info, prefix, command, args, engine, timeout,

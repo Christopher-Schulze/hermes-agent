@@ -29,6 +29,7 @@ from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
     from websockets.asyncio.client import ClientConnection
+    from tools.browser_supervisor_proxy import OwnedPageProxy
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         # (#69727).
         self._page_target_id: Optional[str] = None
         self._owns_page_target: bool = False
+        self._page_proxy: Optional[OwnedPageProxy] = None
         self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
 
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
@@ -214,6 +216,27 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     def page_target_id(self) -> Optional[str]:
         """Return the dedicated page target for this task, if attached."""
         return self._page_target_id
+
+    def page_command_endpoint(self, timeout: float = 10.0) -> str:
+        """Expose only the owned page to the task's agent-browser daemon."""
+        from tools.browser_supervisor_proxy import OwnedPageProxy
+
+        loop = self._loop
+        if loop is None or not loop.is_running() or not self.snapshot().active:
+            raise RuntimeError("CDP supervisor is not active")
+
+        async def endpoint() -> str:
+            target_id = self._page_target_id
+            if not target_id:
+                raise RuntimeError("No supervisor-owned CDP page is available")
+            if self._page_proxy is not None and self._page_proxy.target_id != target_id:
+                await self._page_proxy.close()
+                self._page_proxy = None
+            if self._page_proxy is None:
+                self._page_proxy = OwnedPageProxy(self.cdp_url, target_id)
+            return await self._page_proxy.start()
+
+        return _schedule(endpoint(), loop, timeout=timeout)
 
     def activate_owned_page(self, timeout: float = 5.0) -> Dict[str, Any]:
         """Bring this supervisor's dedicated page to the front (shared CDP).
@@ -405,6 +428,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         # A transport reconnect must reattach the same document. Explicit stop
         # closes it while the reader can still receive Target.closeTarget's reply.
         if self._stop_requested:
+            if self._page_proxy is not None:
+                await self._page_proxy.close()
+                self._page_proxy = None
             with contextlib.suppress(Exception):
                 await self._close_owned_page_target()
         ws, self._ws = self._ws, None
