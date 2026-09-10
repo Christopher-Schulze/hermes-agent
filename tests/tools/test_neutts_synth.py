@@ -62,6 +62,9 @@ class _FakeInt16:
     def __init__(self, values):
         self.values = values
 
+    def __len__(self):
+        return len(self.values)
+
     def tobytes(self):
         return struct.pack(f"<{len(self.values)}h", *self.values)
 
