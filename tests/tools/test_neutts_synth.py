@@ -36,6 +36,53 @@ def _mock_numpy():
     return np
 
 
+class _FakeArray:
+    """Deterministic ndarray stand-in that records flatten/astype and clamps for real."""
+
+    def __init__(self, values):
+        self.values = list(values)
+
+    def flatten(self):
+        flat: list[float] = []
+        for value in self.values:
+            if isinstance(value, (list, tuple)):
+                flat.extend(float(item) for item in value)
+            else:
+                flat.append(float(value))
+        return _FakeArray(flat)
+
+    def __mul__(self, factor):
+        return _FakeArray([value * factor for value in self.values])
+
+    def astype(self, _dtype):
+        return _FakeInt16([int(value) for value in self.values])
+
+
+class _FakeInt16:
+    def __init__(self, values):
+        self.values = values
+
+    def tobytes(self):
+        return struct.pack(f"<{len(self.values)}h", *self.values)
+
+
+def _recording_numpy():
+    """NumPy stand-in that records the clip bounds and yields real int16 PCM."""
+    np = MagicMock()
+    np.ndarray = _FakeArray
+    np.float32 = "float32"
+    np.int16 = "int16"
+    np.array = lambda data, dtype=None: _FakeArray(data)
+    np.clip_bounds = []
+
+    def _clip(values, low, high):
+        np.clip_bounds.append((low, high))
+        return _FakeArray([min(max(value, low), high) for value in values.values])
+
+    np.clip = _clip
+    return np
+
+
 # ── _write_wav ────────────────────────────────────────────────────────
 
 
@@ -65,25 +112,34 @@ class TestWriteWav:
             assert wf.getframerate() == 16000
 
     def test_clamps_samples(self, tmp_path):
-        """Samples outside [-1, 1] are clamped before conversion."""
+        """Out-of-range samples are clamped to [-1, 1] before conversion."""
         from tools.neutts_synth import _write_wav
 
-        mock_np = _mock_numpy()
+        mock_np = _recording_numpy()
+        out = tmp_path / "clip.wav"
         with patch.dict("sys.modules", {"numpy": mock_np}):
-            _write_wav(str(tmp_path / "out.wav"), [2.0, -2.0, 0.0], sample_rate=24000)
+            _write_wav(str(out), [2.0, -3.0, 1.0, -1.0], sample_rate=24000)
 
-        # File was written successfully
-        assert (tmp_path / "out.wav").exists()
+        assert mock_np.clip_bounds == [(-1.0, 1.0)]
+        with wave.open(str(out), "rb") as wf:
+            assert wf.getnframes() == 4
+            frames = struct.unpack("<4h", wf.readframes(4))
+        assert frames == (32767, -32767, 32767, -32767)
 
     def test_flattens_multidimensional(self, tmp_path):
-        """Multi-dimensional arrays are flattened."""
+        """Nested samples are flattened before they reach the writer."""
         from tools.neutts_synth import _write_wav
 
-        mock_np = _mock_numpy()
+        mock_np = _recording_numpy()
+        out = tmp_path / "flat.wav"
         with patch.dict("sys.modules", {"numpy": mock_np}):
-            _write_wav(str(tmp_path / "out.wav"), [[0.1, 0.2], [0.3, 0.4]], sample_rate=24000)
+            _write_wav(str(out), [[0.5, -0.5], [0.25, -0.25]], sample_rate=24000)
 
-        assert (tmp_path / "out.wav").exists()
+        assert mock_np.clip_bounds == [(-1.0, 1.0)]
+        with wave.open(str(out), "rb") as wf:
+            assert wf.getnframes() == 4
+            frames = struct.unpack("<4h", wf.readframes(4))
+        assert frames == (16383, -16383, 8191, -8191)
 
     def test_empty_samples(self, tmp_path):
         """Empty samples produce a valid WAV with 0 data."""
