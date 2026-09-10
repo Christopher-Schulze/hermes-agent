@@ -1112,9 +1112,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            # Capture EOF is not process exit: the child may have redirected or
+            # closed its pipes while still alive (issue #86416). This reader owns
+            # the real exit — wait unbounded so a ``notify_on_complete`` session
+            # still notifies autonomously when the child actually terminates,
+            # the same contract the PTY reader already has.
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                lambda: session.process.wait(timeout=5), lambda: session.process.returncode,
+                lambda: session.process.wait(), lambda: session.process.returncode,
                 proc=session.process)
 
     def _finish_reader(self, session, decoder, append, label, wait, exit_code, proc=None) -> None:
@@ -1123,9 +1128,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
         For pipe-backed readers (``proc`` given), EOF on the capture pipe is NOT the
         same as process exit: the child may have closed its stdout/stderr while still
-        alive (issue #86416). If the child cannot be reaped after the wait timeout,
-        leave the session in _running and let poll()/wait() reconcile via
-        _reconcile_local_exit when it actually terminates."""
+        alive (issue #86416), so ``wait`` blocks until the real child exit. When
+        observation itself fails (``wait`` raised and ``poll`` reports nothing), leave
+        the session in _running and let poll()/wait() reconcile via
+        _reconcile_local_exit when it actually terminates. An unknown exit code is
+        never finalized as a completion."""
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -1135,13 +1142,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
             rc = wait()
         except Exception as e:
             logger.debug("%s wait timed out or failed: %s", label, e)
-        # EOF on the capture pipe does not imply the process exited. Only a real
-        # exit code (from wait/poll) lets us safely finish the session.
+        # Only a real exit code (from wait/poll) lets us safely finish the session.
         if rc is None and proc is not None:
             rc = proc.poll()
         if rc is None and proc is not None:
-            # Direct child is still running after EOF — keep the session
-            # running and do not emit a completion.
+            # The child state cannot be observed — keep the session running and
+            # do not emit a completion.
             logger.info(
                 "Process %s reached EOF on capture pipe but the direct child "
                 "is still running (pid=%s); not marking as exited.",
@@ -1149,7 +1155,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 session.pid,
             )
             return
-        self._finish_exited(session, exit_code())
+        code = exit_code()
+        if code is None:
+            # Never fabricate a completion from an unknown exit (issue #86416).
+            return
+        self._finish_exited(session, code)
 
     @staticmethod
     def _log_delta_command(quoted_log_path: str, offset: int) -> str:
@@ -1262,7 +1272,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             logger.debug("PTY stdout reader ended: %s", e)
         self._finish_reader(
             session, decoder, lambda t: self._ingest_output(session, t), "PTY",
-            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
+            pty.wait, lambda: -pty.signalstatus if getattr(pty, 'signalstatus', None) is not None
+            else getattr(pty, 'exitstatus', -1))
 
     def _ingest_output(self, session: ProcessSession, text: str) -> None:
         """Buffer a freshly-read chunk, then scan watch patterns and stream it live."""
