@@ -95,18 +95,21 @@ def test_format_report_no_skill_name():
 
 
 def test_format_report_multiple_files():
-    """Report groups findings by file."""
+    """Report groups findings by file and orders them by line."""
     findings = [
         ("b.py", 5, "dynamic_import", "importlib.import_module() — ..."),
         ("a.py", 1, "importlib_import", "import importlib — ..."),
         ("a.py", 3, "dynamic_import", "importlib.import_module() — ..."),
     ]
-    out = format_ast_report(findings, skill_name="multi")
-    assert "a.py" in out
-    assert "b.py" in out
-    assert "L1" in out
-    assert "L3" in out
-    assert "L5" in out
+    lines = format_ast_report(findings, skill_name="multi").splitlines()
+    assert lines[0] == "AST deep scan: multi"
+    assert lines[1] == "  3 finding(s):"
+    # Grouped by file, sorted, even though the findings list b.py first.
+    assert lines[2] == "  a.py"
+    assert lines[3].startswith("    L1")
+    assert lines[4].startswith("    L3")
+    assert lines[5] == "  b.py"
+    assert lines[6].startswith("    L5")
 
 
 def test_literal_getattr_not_flagged(tmp_path):
@@ -123,16 +126,40 @@ def test_literal_dict_access_not_flagged(tmp_path):
     assert "dict_access" not in _pids(ast_scan_path(f))
 
 
-def test_oserror_on_file_read_returns_empty(tmp_path):
-    """OSError when reading a file returns empty findings."""
-    f = tmp_path / "perm.py"
-    f.write_text("import importlib\n")
-    f.chmod(0o000)
-    try:
-        result = ast_scan_path(f)
-        assert isinstance(result, list)
-    finally:
-        f.chmod(0o644)
+def test_oserror_on_file_read_returns_empty(tmp_path, monkeypatch):
+    """A forced OSError while reading returns the documented empty result."""
+    from tools import skills_ast_audit as audit
+
+    target = tmp_path / "unreadable.py"
+    target.write_text("import importlib\n")
+    real_read_text = audit.Path.read_text
+
+    def _raise_for_target(path, *args, **kwargs):
+        if path == target:
+            raise OSError("permission denied")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(audit.Path, "read_text", _raise_for_target)
+    assert ast_scan_path(target) == []
+
+
+def test_oserror_in_directory_scan_skips_unreadable_file(tmp_path, monkeypatch):
+    """A forced OSError inside a directory scan contributes no findings."""
+    from tools import skills_ast_audit as audit
+
+    (tmp_path / "good.py").write_text("import importlib\n")
+    bad = tmp_path / "bad.py"
+    bad.write_text("import importlib\n")
+    real_read_text = audit.Path.read_text
+
+    def _raise_for_target(path, *args, **kwargs):
+        if path == bad:
+            raise OSError("permission denied")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(audit.Path, "read_text", _raise_for_target)
+    findings = ast_scan_path(tmp_path)
+    assert [f for (f, _l, _p, _d) in findings] == ["good.py"]
 
 
 def test_scan_source_directly():
@@ -145,9 +172,12 @@ def test_scan_source_directly():
     assert any(pid == "importlib_import" for (_f, _l, pid, _d) in findings)
 
 
-def test_scan_source_value_error():
-    """ValueError in ast.parse returns empty list."""
-    from tools.skills_ast_audit import _scan_source
-    # Very large integer literal can cause ValueError in some Python versions
-    result = _scan_source("x = 1\n", "ok.py")
-    assert isinstance(result, list)
+def test_scan_source_value_error(monkeypatch):
+    """A ValueError from the parser is swallowed into the documented empty list."""
+    from tools import skills_ast_audit as audit
+
+    def _raise(*args, **kwargs):
+        raise ValueError("invalid source")
+
+    monkeypatch.setattr(audit.ast, "parse", _raise)
+    assert audit._scan_source("x = 1\n", "ok.py") == []
