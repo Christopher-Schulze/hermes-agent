@@ -439,6 +439,17 @@ class TestBridgeDispatch:
         assert name == "some_mcp_tool"
         assert args == {"query": long_value}
 
+    def test_resolve_underlying_call_accepts_leading_whitespace(self, monkeypatch):
+        """Leading whitespace must keep parsing, exactly as it did with json.loads."""
+        from tools.tool_search import resolve_underlying_call
+        monkeypatch.setattr("tools.tool_search.is_deferrable_tool_name", lambda _name, _tools: True)
+        name, args, err = resolve_underlying_call({
+            "name": "some_mcp_tool",
+            "arguments": '\n  {"foo": "bar"}',
+        })
+        assert err is None
+        assert (name, args) == ("some_mcp_tool", {"foo": "bar"})
+
     def test_resolve_underlying_call_still_rejects_invalid_json(self):
         """Plain broken JSON must still fail with a JSON error."""
         from tools.tool_search import resolve_underlying_call

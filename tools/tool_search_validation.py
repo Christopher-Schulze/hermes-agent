@@ -172,8 +172,9 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
             try:
                 # Models sometimes append a second JSON value or prose after the
                 # first object ("Extra data" JSON parse errors). Decode the first
-                # complete JSON value and ignore trailing noise.
-                raw_args = json.JSONDecoder().raw_decode(raw_args)[0]
+                # complete JSON value and ignore trailing noise; leading whitespace
+                # stays valid, exactly as it was under ``json.loads``.
+                raw_args = json.JSONDecoder().raw_decode(raw_args.lstrip())[0]
             except json.JSONDecodeError as e:
                 return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
         if not isinstance(raw_args, dict):
