@@ -1184,7 +1184,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # Capture EOF is not process exit: the child may have redirected or
             # closed its pipes while still alive (issue #86416). This reader owns
             # the real exit — wait unbounded so a notify_on_complete session
-            # still notifies autonomously when the child actually terminates.
+            # still notifies autonomously when the child actually terminates,
+            # the same contract the PTY reader already has.
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
                 session.process.wait, lambda: session.process.returncode,
@@ -1197,9 +1198,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         A process may close stdout long before it exits.  The reader owns a dedicated
         daemon thread, so it must keep waiting rather than publish a false completion
         and discard the only ``Popen`` handle that can reap the child.
-        For pipe-backed readers (``proc`` given), capture-pipe EOF is not process
-        exit (issue #86416). When observation itself fails, leave the session in
-        _running. An unknown exit code is never finalized as a completion.
+        For pipe-backed readers (``proc`` given), EOF on the capture pipe is NOT the
+        same as process exit: the child may have closed its stdout/stderr while still
+        alive (issue #86416), so ``wait`` blocks until the real child exit. When
+        observation itself fails (``wait`` raised and ``poll`` reports nothing), leave
+        the session in _running and let poll()/wait() reconcile via
+        _reconcile_local_exit when it actually terminates. An unknown exit code is
+        never finalized as a completion.
         """
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
@@ -1211,13 +1216,18 @@ class ProcessRegistry(ProcessCheckpointMixin):
         except Exception as e:
             # A PTY child reaped by isalive() already has its exitstatus; only an
             # unknown status must stay tracked for later reconciliation.
-            if exit_code() is None:
+            if proc is None and exit_code() is None:
                 logger.warning("%s wait failed; leaving process tracked: %s", label, e)
                 return
-            logger.warning("%s wait failed; recording known exit status: %s", label, e)
+            if proc is None:
+                logger.warning("%s wait failed; recording known exit status: %s", label, e)
+            else:
+                logger.debug("%s wait timed out or failed: %s", label, e)
         if rc is None and proc is not None:
             rc = proc.poll()
         if rc is None and proc is not None:
+            # The child state cannot be observed — keep the session running and
+            # do not emit a completion.
             logger.info(
                 "Process %s reached EOF on capture pipe but the direct child "
                 "is still running (pid=%s); not marking as exited.",
@@ -1227,6 +1237,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return
         code = exit_code()
         if code is None:
+            # Never fabricate a completion from an unknown exit (issue #86416).
             return
         self._finish_exited(session, code)
 
@@ -1364,7 +1375,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 self._ingest_output(session, tail)
         self._finish_reader(
             session, decoder, lambda t: self._ingest_output(session, t), "PTY",
-            pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
+            pty.wait, lambda: -pty.signalstatus if getattr(pty, 'signalstatus', None) is not None
+            else getattr(pty, 'exitstatus', -1))
 
     def _ingest_output(self, session: ProcessSession, text: str) -> None:
         """Buffer a freshly-read chunk, then scan watch patterns and stream it live."""
