@@ -719,16 +719,20 @@ def test_timeout_error_handler(cdp_server):
 
 
 def test_websocket_error_handler(monkeypatch):
-    """WebSocketException is caught and returns a helpful error."""
+    """WebSocketException is caught and returns the reconnect-specific error."""
     monkeypatch.setattr(
         browser_cdp_tool, "_resolve_cdp_endpoint",
-        lambda: "ws://localhost:1/devtools/browser/fake",
+        lambda: "ws://localhost:9222/devtools/browser/fake",
     )
-    result = json.loads(
-        browser_cdp_tool.browser_cdp(method="Target.getTargets", timeout=2.0)
-    )
+
+    async def _raise_websocket_error(*args, **kwargs):
+        raise browser_cdp_tool.WebSocketException("connection closed")
+
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", _raise_websocket_error)
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Target.getTargets"))
     assert "error" in result
-    # Connection refused → WebSocket error or generic error
+    assert "WebSocket error talking to CDP" in result["error"]
+    assert "/browser connect" in result["error"]
     assert result.get("method") == "Target.getTargets"
 
 
