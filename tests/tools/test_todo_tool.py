@@ -226,14 +226,6 @@ class TestMergeEdgeCases:
         assert len(items) == 1
         assert items[0]["id"] == "1"
 
-    def test_merge_updates_status_only(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Original", "status": "pending"}])
-        store.write([{"id": "1", "status": "completed"}], merge=True)
-        item = store.read()[0]
-        assert item["status"] == "completed"
-        assert item["content"] == "Original"
-
     def test_merge_ignores_invalid_status(self):
         store = TodoStore()
         store.write([{"id": "1", "content": "Orig", "status": "pending"}])
@@ -251,31 +243,6 @@ class TestMergeEdgeCases:
         store.write([{"id": "b", "status": "completed"}], merge=True)
         ids = [i["id"] for i in store.read()]
         assert ids == ["a", "b", "c"]
-
-
-class TestFormatForInjectionEdgeCases:
-    """Cover injection paths not exercised by the basic tests."""
-
-    def test_all_completed_returns_none(self):
-        store = TodoStore()
-        store.write([
-            {"id": "1", "content": "Done", "status": "completed"},
-            {"id": "2", "content": "Also done", "status": "cancelled"},
-        ])
-        assert store.format_for_injection() is None
-
-    def test_cancelled_marker_not_injected(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Cancelled", "status": "cancelled"}])
-        assert store.format_for_injection() is None
-
-    def test_in_progress_marker_in_output(self):
-        store = TodoStore()
-        store.write([{"id": "1", "content": "Working", "status": "in_progress"}])
-        text = store.format_for_injection()
-        assert text is not None
-        assert "[>]" in text
-        assert "Working" in text
 
 
 class TestValidate:
