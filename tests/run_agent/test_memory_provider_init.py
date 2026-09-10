@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from agent.memory_provider import MemoryProvider
+
 
 class RecordingMemoryProvider:
     name = "recording"
@@ -32,7 +34,7 @@ def test_shutdown_memory_provider_is_idempotent():
 
     manager = MagicMock()
     agent = object.__new__(AIAgent)
-    agent._memory_manager = manager
+    setattr(agent, "_memory_manager", manager)
     agent.context_compressor = None
     agent.session_id = "session-1"
 
@@ -66,7 +68,7 @@ def test_builtin_memory_provider_aliases_do_not_load_plugin():
                 skip_memory=False,
             )
 
-        assert agent._memory_manager is None, alias
+        assert getattr(agent, "_memory_manager") is None, alias
         load_memory_provider.assert_not_called()
 
 
@@ -96,8 +98,8 @@ def test_builtin_provider_alias_keeps_file_memory_enabled():
             skip_memory=False,
         )
 
-    assert agent._memory_store is memory_store.return_value
-    assert agent._memory_manager is None
+    assert getattr(agent, "_memory_store") is memory_store.return_value
+    assert getattr(agent, "_memory_manager") is None
     load_memory_provider.assert_not_called()
     memory_store.return_value.load_from_disk.assert_called_once()
 
@@ -130,7 +132,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
             skip_memory=False,
         )
 
-    assert agent._memory_manager is None
+    assert getattr(agent, "_memory_manager") is None
     from_global_config.assert_not_called()
     load_memory_provider.assert_not_called()
     save_config.assert_not_called()
@@ -142,14 +144,14 @@ def test_close_shuts_down_memory_provider():
     from run_agent import AIAgent
 
     agent = object.__new__(AIAgent)
-    agent._memory_manager = MagicMock()
+    setattr(agent, "_memory_manager", MagicMock())
     agent.context_compressor = None
     agent.session_id = ""
     agent._session_messages = []
 
     agent.close()
 
-    agent._memory_manager.shutdown_all.assert_called_once()
+    getattr(agent, "_memory_manager").shutdown_all.assert_called_once()
 
 
 def test_aiagent_forwards_user_id_alt_to_memory_provider():
@@ -178,7 +180,7 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
             user_id_alt="union-id",
         )
 
-    assert agent._memory_manager is not None
+    assert getattr(agent, "_memory_manager") is not None
     assert provider.init_session_id == "sess-alt"
     assert provider.init_kwargs["user_id"] == "open-id"
     assert provider.init_kwargs["user_id_alt"] == "union-id"
@@ -187,10 +189,18 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
-class CoreShadowProvider:
+class CoreShadowProvider(MemoryProvider):
     """Provider that tries to register tools shadowing built-in core tools."""
 
-    name = "core-shadow"
+    @property
+    def name(self) -> str:
+        return "core-shadow"
+
+    def is_available(self) -> bool:
+        return True
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        pass
 
     def get_tool_schemas(self):
         return [
