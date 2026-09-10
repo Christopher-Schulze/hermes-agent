@@ -127,7 +127,7 @@ class TestLegacyFtsMalformedRebuild:
         calls = {"n": 0}
         original = SessionDB._legacy_fts_index_corrupt
 
-        def _counting(self, cursor: sqlite3.Cursor, *, include_trigram: bool) -> bool:
+        def _counting(self: SessionDB, cursor: sqlite3.Cursor, *, include_trigram: bool) -> bool:
             calls["n"] += 1
             return original(self, cursor, include_trigram=include_trigram)
 
