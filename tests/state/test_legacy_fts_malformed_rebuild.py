@@ -17,6 +17,13 @@ from hermes_state_common import SCHEMA_SQL
 from hermes_state_schema import LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL
 
 
+def _connection(db: SessionDB) -> sqlite3.Connection:
+    """The live connection of an open ``SessionDB``; ``_conn`` is ``None`` once closed."""
+    conn = db._conn
+    assert conn is not None
+    return conn
+
+
 def _create_legacy_db(db_path):
     """Create a database with legacy inline FTS5 schema."""
     conn = sqlite3.connect(str(db_path))
@@ -79,10 +86,10 @@ class TestLegacyFtsMalformedRebuild:
         # rebuild the corrupt index, not skip the rebuild gate.
         db = SessionDB(db_path=db_path)
         try:
-            assert db._db_has_legacy_inline_fts(db._conn)
-            quick_check = [r[0] for r in db._conn.execute("PRAGMA quick_check").fetchall()]
+            assert db._db_has_legacy_inline_fts(_connection(db).cursor())
+            quick_check = [r[0] for r in _connection(db).execute("PRAGMA quick_check").fetchall()]
             assert quick_check == ["ok"]
-            matches = db._conn.execute(
+            matches = _connection(db).execute(
                 "SELECT COUNT(*) FROM messages_fts_trigram "
                 "WHERE messages_fts_trigram MATCH 'keyword'"
             ).fetchone()[0]
@@ -103,10 +110,10 @@ class TestLegacyFtsMalformedRebuild:
 
         db = SessionDB(db_path=db_path)
         try:
-            assert db._db_has_legacy_inline_fts(db._conn)
-            quick_check = [r[0] for r in db._conn.execute("PRAGMA quick_check").fetchall()]
+            assert db._db_has_legacy_inline_fts(_connection(db).cursor())
+            quick_check = [r[0] for r in _connection(db).execute("PRAGMA quick_check").fetchall()]
             assert quick_check == ["ok"]
-            matches = db._conn.execute(
+            matches = _connection(db).execute(
                 "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'keyword'"
             ).fetchone()[0]
             assert matches == 10
@@ -120,7 +127,7 @@ class TestLegacyFtsMalformedRebuild:
         calls = {"n": 0}
         original = SessionDB._legacy_fts_index_corrupt
 
-        def _counting(self, cursor, *, include_trigram):
+        def _counting(self, cursor: sqlite3.Cursor, *, include_trigram: bool) -> bool:
             calls["n"] += 1
             return original(self, cursor, include_trigram=include_trigram)
 
@@ -203,13 +210,13 @@ class TestLegacyFtsMalformedRebuild:
         monkeypatch.setattr(SessionDB, "_rebuild_fts_indexes", _flaky_rebuild)
         db = SessionDB(db_path=db_path)
         try:
-            breadcrumb = db._conn.execute(
+            breadcrumb = _connection(db).execute(
                 "SELECT value FROM state_meta WHERE key = 'fts_stale'"
             ).fetchone()
             assert breadcrumb is not None, "fts_stale breadcrumb must persist"
             assert db._fts_stale is True
             assert db._fts_enabled is False
-            trigger_count = db._conn.execute(
+            trigger_count = _connection(db).execute(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
                 "AND name LIKE 'messages_ai%'"
             ).fetchone()[0]
@@ -222,11 +229,11 @@ class TestLegacyFtsMalformedRebuild:
         db2 = SessionDB(db_path=db_path)
         try:
             assert db2._fts_enabled is True
-            breadcrumb = db2._conn.execute(
+            breadcrumb = _connection(db2).execute(
                 "SELECT value FROM state_meta WHERE key = 'fts_stale'"
             ).fetchone()
             assert breadcrumb is None, "breadcrumb must clear after recovery"
-            matches = db2._conn.execute(
+            matches = _connection(db2).execute(
                 "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'keyword'"
             ).fetchone()[0]
             assert matches == 10
@@ -251,7 +258,7 @@ class TestLegacyFtsMalformedRebuild:
                 return original(self, cursor, table_name)
 
             monkeypatch.setattr(SessionDB, "_fts_table_probe", _incapable)
-            cursor = db._conn.cursor()
+            cursor = _connection(db).cursor()
             stamp = db._fts_integrity_engine_id(cursor)
             assert stamp.startswith("fts5:")
             assert stamp.endswith(

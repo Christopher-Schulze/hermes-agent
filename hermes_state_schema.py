@@ -538,7 +538,7 @@ class SessionSchemaMixin:
             cursor.executescript(recovery_sql)
         except sqlite3.DatabaseError as fallback_exc:
             with contextlib.suppress(sqlite3.Error):
-                self._conn.rollback()
+                cursor.connection.rollback()
             # A rolled-back recovery leaves the original malformed table
             # intact, but a script that died after CREATE can leave the table
             # empty-but-valid: a later integrity-check would pass it and stamp
