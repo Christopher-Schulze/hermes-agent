@@ -98,13 +98,13 @@ def test_format_report_multiple_files():
     """Report groups findings by file and orders them by line."""
     findings = [
         ("b.py", 5, "dynamic_import", "importlib.import_module() — ..."),
-        ("a.py", 1, "importlib_import", "import importlib — ..."),
         ("a.py", 3, "dynamic_import", "importlib.import_module() — ..."),
+        ("a.py", 1, "importlib_import", "import importlib — ..."),
     ]
     lines = format_ast_report(findings, skill_name="multi").splitlines()
     assert lines[0] == "AST deep scan: multi"
     assert lines[1] == "  3 finding(s):"
-    # Grouped by file, sorted, even though the findings list b.py first.
+    # Both file groups and their line numbers arrive out of order.
     assert lines[2] == "  a.py"
     assert lines[3].startswith("    L1")
     assert lines[4].startswith("    L3")
