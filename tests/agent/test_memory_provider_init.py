@@ -72,8 +72,16 @@ def test_builtin_memory_provider_aliases_do_not_load_plugin():
         load_memory_provider.assert_not_called()
 
 
-def test_builtin_provider_alias_keeps_file_memory_enabled():
+def test_builtin_provider_alias_keeps_file_memory_enabled(tmp_path):
     """Built-in MEMORY.md remains available when only the external provider is disabled."""
+    from tools.memory_tool import ENTRY_DELIMITER, MemoryStore
+
+    memory_dir = tmp_path / "memories"
+    memory_dir.mkdir()
+    memory_file = memory_dir / "MEMORY.md"
+    existing_entry = "The project uses SQLite."
+    added_entry = "The test suite runs on macOS."
+    memory_file.write_text(existing_entry, encoding="utf-8")
     cfg = {
         "memory": {"provider": "builtin", "memory_enabled": True},
         "agent": {},
@@ -82,7 +90,7 @@ def test_builtin_provider_alias_keeps_file_memory_enabled():
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.load_config_readonly", return_value=cfg),
         patch("plugins.memory.load_memory_provider") as load_memory_provider,
-        patch("tools.memory_tool.MemoryStore") as memory_store,
+        patch("tools.memory_tool.get_memory_dir", return_value=memory_dir),
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("run_agent.get_tool_definitions", return_value=[]),
         patch("run_agent.check_toolset_requirements", return_value={}),
@@ -98,10 +106,21 @@ def test_builtin_provider_alias_keeps_file_memory_enabled():
             skip_memory=False,
         )
 
-    assert getattr(agent, "_memory_store") is memory_store.return_value
-    assert getattr(agent, "_memory_manager") is None
-    load_memory_provider.assert_not_called()
-    memory_store.return_value.load_from_disk.assert_called_once()
+        memory_store = getattr(agent, "_memory_store")
+        assert isinstance(memory_store, MemoryStore)
+        assert memory_store.memory_enabled
+        assert memory_store.memory_entries == [existing_entry]
+        assert getattr(agent, "_memory_manager") is None
+        load_memory_provider.assert_not_called()
+
+        result = memory_store.add("memory", added_entry)
+        assert result["success"] is True
+        assert memory_file.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(
+            [existing_entry, added_entry]
+        )
+        reloaded_store = MemoryStore()
+        reloaded_store.load_from_disk()
+        assert reloaded_store.memory_entries == [existing_entry, added_entry]
 
 
 def test_blank_memory_provider_does_not_auto_enable_honcho():
@@ -237,4 +256,3 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
-
