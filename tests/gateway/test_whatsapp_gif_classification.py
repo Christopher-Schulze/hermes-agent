@@ -88,6 +88,36 @@ def test_gifplayback_mp4_keeps_truthful_local_container(monkeypatch, tmp_path):
     assert event.media_types == ["video/mp4"]
 
 
+@pytest.mark.parametrize(
+    ("suffix", "bridge_mime", "expected_mime"),
+    [
+        (".mp4", None, "video/mp4"),
+        (".webm", None, "video/webm"),
+        (".mov", None, "video/quicktime"),
+        (".mkv", None, "video/x-matroska"),
+        (".WEBM", "", "video/webm"),
+        (".gif", None, "image/gif"),
+        (".mov", "video/mp4", "video/mp4"),
+    ],
+    ids=["mp4", "webm", "mov", "mkv", "uppercase-webm", "gif", "supplied-mime"],
+)
+def test_gif_local_container_mime_fallback(monkeypatch, tmp_path, suffix, bridge_mime, expected_mime):
+    """Missing bridge MIME follows the local container; supplied MIME wins."""
+    monkeypatch.setattr(whatsapp_adapter, "_cache_dirs", lambda: (tmp_path,))
+    path = str(tmp_path / f"inbound{suffix}")
+    payload = _media_payload("gif", mediaUrls=[path])
+    if bridge_mime is not None:
+        payload["mime"] = bridge_mime
+    adapter = _make_adapter()
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.message_type == MessageType.PHOTO
+    assert event.media_urls == [path]
+    assert event.media_types == [expected_mime]
+
+
 def test_gifplayback_mp4_does_not_enter_image_cache(monkeypatch):
     """A remote MP4 must not be cached with a misleading .gif suffix."""
     cache_image = AsyncMock()
