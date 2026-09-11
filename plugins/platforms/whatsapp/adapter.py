@@ -173,7 +173,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 from gateway.whatsapp_identity import to_whatsapp_jid
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
+    BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, cache_image_from_url, cache_audio_from_url,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
@@ -776,10 +776,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             elif label is not None and os.path.isabs(url):
                 if _is_allowed_bridge_path(url):
                     # For GIF local paths without a bridge mime, infer from the
-                    # file extension: MP4 container stays video/mp4.
+                    # file extension using the shared video-container MIME map.
                     if is_gif and not bridge_mime:
                         suffix = Path(url).suffix.lower()
-                        local_mime = "video/mp4" if suffix in _WA_VIDEO_EXTS else "image/gif"
+                        local_mime = SUPPORTED_VIDEO_TYPES[suffix] if suffix in _WA_VIDEO_EXTS else "image/gif"
                     else:
                         local_mime = mime
                     accepted.append((url, local_mime))
