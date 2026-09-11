@@ -741,12 +741,11 @@ def test_websocket_error_handler(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_frame_id_no_supervisor_attached():
+def test_frame_id_no_supervisor_attached(monkeypatch):
     """browser_cdp with frame_id but no supervisor → helpful error."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-    with SUPERVISOR_REGISTRY._lock:
-        SUPERVISOR_REGISTRY._by_task.clear()
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: None)
 
     result = json.loads(
         browser_cdp_tool.browser_cdp(
@@ -769,22 +768,17 @@ def test_frame_id_not_found_in_supervisor(monkeypatch):
         frame_tree={"top": {"frame_id": "other"}, "children": []},
         active=True, cdp_url="ws://localhost:9222", task_id="default",
     ))
-    with SUPERVISOR_REGISTRY._lock:
-        SUPERVISOR_REGISTRY._by_task["default"] = supervisor
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
 
-    try:
-        result = json.loads(
-            browser_cdp_tool.browser_cdp(
-                method="Runtime.evaluate",
-                frame_id="nonexistent",
-                task_id="default",
-            )
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="nonexistent",
+            task_id="default",
         )
-        assert "error" in result
-        assert "not found" in result["error"]
-    finally:
-        with SUPERVISOR_REGISTRY._lock:
-            SUPERVISOR_REGISTRY._by_task.clear()
+    )
+    assert "error" in result
+    assert "not found" in result["error"]
 
 
 def test_frame_id_same_origin_no_session(monkeypatch):
@@ -797,22 +791,17 @@ def test_frame_id_same_origin_no_session(monkeypatch):
         frame_tree={"top": {"frame_id": "top-1"}, "children": [{"frame_id": "child-1"}]},
         active=True, cdp_url="ws://localhost:9222", task_id="default",
     ))
-    with SUPERVISOR_REGISTRY._lock:
-        SUPERVISOR_REGISTRY._by_task["default"] = supervisor
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
 
-    try:
-        result = json.loads(
-            browser_cdp_tool.browser_cdp(
-                method="Runtime.evaluate",
-                frame_id="child-1",
-                task_id="default",
-            )
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="child-1",
+            task_id="default",
         )
-        assert "error" in result
-        assert "out-of-process" in result["error"]
-    finally:
-        with SUPERVISOR_REGISTRY._lock:
-            SUPERVISOR_REGISTRY._by_task.clear()
+    )
+    assert "error" in result
+    assert "out-of-process" in result["error"]
 
 
 def test_frame_id_supervisor_loop_not_running(monkeypatch):
@@ -825,19 +814,14 @@ def test_frame_id_supervisor_loop_not_running(monkeypatch):
         frame_tree={"top": {}, "children": [{"frame_id": "f1", "session_id": "s1"}]},
         active=True, cdp_url="ws://localhost:9222", task_id="default",
     ))
-    with SUPERVISOR_REGISTRY._lock:
-        SUPERVISOR_REGISTRY._by_task["default"] = supervisor
+    monkeypatch.setattr(SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
 
-    try:
-        result = json.loads(
-            browser_cdp_tool.browser_cdp(
-                method="Runtime.evaluate",
-                frame_id="f1",
-                task_id="default",
-            )
+    result = json.loads(
+        browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="f1",
+            task_id="default",
         )
-        assert "error" in result
-        assert "not running" in result["error"]
-    finally:
-        with SUPERVISOR_REGISTRY._lock:
-            SUPERVISOR_REGISTRY._by_task.clear()
+    )
+    assert "error" in result
+    assert "not running" in result["error"]
