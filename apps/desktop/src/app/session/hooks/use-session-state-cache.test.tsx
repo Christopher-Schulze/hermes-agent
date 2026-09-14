@@ -2,9 +2,9 @@ import { act, cleanup, render } from '@testing-library/react'
 import { type MutableRefObject, useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
 import { group } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
+import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $activeSessionStoredIdRotation,
   $currentFastMode,
