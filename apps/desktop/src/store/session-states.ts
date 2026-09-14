@@ -392,32 +392,48 @@ export function getRecentlySettledSessionIds(now: number = Date.now()): string[]
   return live
 }
 
+/** The session id the live HashRouter route names, or null when the route has
+ *  no session opinion (new-chat draft, reserved/overlay/contributed page, or
+ *  no hash at all). Desktop mounts HashRouter, so the app route lives in
+ *  `location.hash` (`#/stored-A`); `location.pathname` is always the
+ *  document's own path and never carries the session segment. */
+function windowRouteSessionId(): string | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  return routeSessionId(window.location.hash.replace(/^#/, ''))
+}
+
 /** Whether the user is still focused on a session that belongs to the same
  *  durable lineage as the given stored id. Used to decide whether a
  *  backgrounded session's delayed id-rotation may follow the route/selection
  *  to its new tip, or whether the user has already navigated away.
- */
+ *
+ *  Every surface that can name the on-screen session must agree: the focused
+ *  tile or primary (`$focusedStoredSessionId` already folds the layout's
+ *  interaction tracker, an open tile, and the primary selection into one
+ *  answer) AND the HashRouter route. A fast A -> B switch can leave route and
+ *  selection on A while tile B holds focus; either surface naming a session
+ *  outside the lineage means the user has already moved on (#86106). */
 export function isSessionInForeground(storedSessionId: string): boolean {
   const sessions = $sessions.get()
   const foregroundIds = new Set(lineageAliases(storedSessionId, sessions))
+  const focused = $focusedStoredSessionId.get()
 
-  if (typeof window !== 'undefined') {
-    const routed = routeSessionId(window.location.pathname)
-
-    if (routed !== null) {
-      return foregroundIds.has(routed)
-    }
+  if (focused !== null && !foregroundIds.has(focused)) {
+    return false
   }
 
-  const selected = $selectedStoredSessionId.get()
+  const routed = windowRouteSessionId()
 
-  if (selected !== null) {
-    return foregroundIds.has(selected)
+  if (routed !== null && !foregroundIds.has(routed)) {
+    return false
   }
 
-  // No route and no store selection: a fresh unpersisted chat is still
-  // the thing on screen. The caller already requires the rotating runtime
-  // to be $activeSessionId, so allow that session's own A -> A-next.
+  // Neither surface names a session: a fresh unpersisted chat is still the
+  // thing on screen. The caller already requires the rotating runtime to be
+  // $activeSessionId, so allow that session's own A -> A-next.
   return true
 }
 
