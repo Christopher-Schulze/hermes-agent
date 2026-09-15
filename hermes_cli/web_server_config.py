@@ -463,8 +463,9 @@ def _validated_main_model_selection(
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     provider_norm = provider.strip().lower()
     is_custom_endpoint = provider_norm in {"custom", "local"} or provider_norm.startswith("custom:")
+    switch_provider = "custom" if provider_norm.startswith("custom:") else provider
     result = switch_model(
-        raw_input=model, explicit_provider=provider, is_global=True,
+        raw_input=model, explicit_provider=switch_provider, is_global=True,
         current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
         current_base_url=base_url if is_custom_endpoint else str(model_cfg.get("base_url") or ""),
         current_api_key=api_key if is_custom_endpoint else "",
@@ -687,8 +688,11 @@ def _prepare_main_assignment(cfg: dict, provider: str, model: str, base_url: str
 def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: str, api_key: str,
                                 prepared: "Optional[tuple[str, ModelSwitchResult]]" = None) -> dict:
     from hermes_cli.config import save_config
+    requested_provider = provider
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
+    if requested_provider.strip().lower().startswith("custom:"):
+        provider = requested_provider.strip()
     provider_entry = _provider_entry(cfg, provider)
     assignment_key_env = persist_custom_endpoint_secret(provider, base_url, api_key)
     if assignment_key_env:
