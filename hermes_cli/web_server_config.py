@@ -509,7 +509,9 @@ def _validated_main_model_selection(
     from hermes_cli.model_switch import switch_model
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    is_bare_custom = provider.strip().lower() in {"custom", "local"}
+    provider_norm = provider.strip().lower()
+    is_bare_custom = provider_norm in {"custom", "local"}
+    is_custom_endpoint = is_bare_custom or provider_norm.startswith("custom:")
     # An explicit endpoint must not resolve through the configured providers: the legacy
     # bare-``custom`` recovery in ``resolve_custom_provider`` would bind the FIRST named entry, and
     # a ``providers.custom`` / ``providers.local`` block (same key as the bare selector) would win
@@ -529,8 +531,8 @@ def _validated_main_model_selection(
         raw_input=model, explicit_provider=provider, is_global=True,
         current_provider="custom" if explicit_endpoint else str(model_cfg.get("provider") or ""),
         current_model=str(model_cfg.get("default") or ""),
-        current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
-        current_api_key=api_key if is_bare_custom else "",
+        current_base_url=base_url if is_custom_endpoint else str(model_cfg.get("base_url") or ""),
+        current_api_key=api_key if is_custom_endpoint else "",
         user_providers=user_providers,
         custom_providers=[] if explicit_endpoint else get_compatible_custom_providers(cfg))
     if not result.success:
@@ -550,13 +552,21 @@ def _validated_main_model_selection(
 
 
 def _apply_main_model_assignment(
-    model_cfg: Any, result: "ModelSwitchResult", api_key: str = "", key_env: str = ""
+    model_cfg: Any,
+    result: "ModelSwitchResult",
+    api_key: str = "",
+    key_env: str = "",
+    base_url: str = "",
 ) -> dict:
     """Apply a main-slot selection while preserving the credential binding and remote masks."""
     from hermes_cli.config_backend import supports_file_tooling
     from hermes_cli.model_switch import apply_model_selection, remote_model_selection_guard
 
     before = model_cfg
+    previous = model_cfg if isinstance(model_cfg, dict) else {}
+    old_provider = str(previous.get("provider") or "").strip().lower()
+    old_url = str(previous.get("base_url") or "").strip().rstrip("/")
+    endpoint_changed = bool(base_url.strip() and old_url and base_url.strip().rstrip("/") != old_url)
     # Remote Config: the caller saves the effective block as a whole document, so a cleared
     # inherited key must be masked (null), and a locked route key refuses the whole assignment.
     model_cfg = apply_model_selection(model_cfg, result, mask_cleared=not supports_file_tooling())
@@ -568,6 +578,11 @@ def _apply_main_model_assignment(
     elif api_key.strip():
         model_cfg["api_key"] = api_key.strip()
         drop_model_key(model_cfg, "api")
+        drop_model_key(model_cfg, "key_env")
+        drop_model_key(model_cfg, "api_key_env")
+    elif old_provider != result.target_provider.strip().lower() or endpoint_changed:
+        for key in ("api_key", "api", "key_env", "api_key_env"):
+            drop_model_key(model_cfg, key)
     remote_model_selection_guard(before, model_cfg)
     return model_cfg
 
@@ -841,7 +856,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = _apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env
+        cfg.get("model", {}), result, api_key, assignment_key_env, base_url
     )
     if not assignment_key_env and not api_key and not (
         explicit_endpoint and _entry_points_elsewhere(provider_entry, base_url)
