@@ -666,7 +666,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             except OSError:
                 pass  # stat failed — fall through to full read
 
-        result = _get_file_ops(task_id).read_file(path, offset, limit, line_numbers=line_numbers)
+        read_kwargs = {} if line_numbers else {"line_numbers": False}
+        result = _get_file_ops(task_id).read_file(path, offset, limit, **read_kwargs)
         result_dict = result.to_dict()
 
         # Cache a not-found result for retries. Deliberately NO early return:
