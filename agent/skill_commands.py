@@ -504,19 +504,18 @@ def resolve_slash_key(command: str, table: Dict[str, Any]) -> Optional[str]:
         return None
     bare = command.lstrip("/")
     tg = telegram_bot_command_form(bare)
-    if not tg:
-        return None
-    # All registered keys that Telegram would present as the same bot command.
-    collisions = sorted(
-        key
-        for key in table
-        if telegram_bot_command_form(key.lstrip("/")) == tg
-    )
-    if collisions:
-        # Deterministic first-wins — matches sorted(skill_cmds) menu build order.
-        return collisions[0]
-    # No telegram-form match: allow direct key when the bare token is already
-    # a stored slug (e.g. CLI typed exactly).
+    if tg:
+        # All registered keys that Telegram would present as the same bot command.
+        collisions = sorted(
+            key
+            for key in table
+            if telegram_bot_command_form(key.lstrip("/")) == tg
+        )
+        if collisions:
+            # Deterministic first-wins — matches sorted(skill_cmds) menu build order.
+            return collisions[0]
+    # Empty Telegram form (letters outside [a-z0-9_]) or no telegram-form
+    # match: allow the stored slug for CLI / Unicode keys (#12351).
     exact = f"/{bare}"
     if exact in table:
         return exact
