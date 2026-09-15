@@ -300,7 +300,7 @@ def sanitize_tool_call_arguments(
             if existing_tool_msg is None:
                 messages.insert(
                     insert_at,
-                    make_tool_result_message(function_name if function_name != "?" else "", marker, tool_call_id),
+                    make_tool_result_message(function_name if function_name != "?" else "", marker, tool_call_id or ""),
                 )
                 insert_at += 1
             else:
