@@ -482,6 +482,7 @@ def _apply_main_model_assignment(
     api_key: str = "",
     key_env: str = "",
     base_url: str = "",
+    provider: str = "",
 ) -> dict:
     """Apply a main-slot selection via ``apply_model_selection``, then the shared
     persist/clear rules so custom secrets stay in ``key_env`` and a host change
@@ -491,7 +492,7 @@ def _apply_main_model_assignment(
     model_cfg = apply_model_selection(model_cfg, result)
     return apply_main_model_assignment(
         model_cfg,
-        result.target_provider,
+        provider or result.target_provider,
         result.new_model,
         base_url,
         api_key,
@@ -698,7 +699,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = _apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env, base_url
+        cfg.get("model", {}), result, api_key, assignment_key_env, base_url, provider
     )
     if not assignment_key_env and not api_key:
         _resolve_assignment_credentials(model_cfg, provider, provider_entry)
