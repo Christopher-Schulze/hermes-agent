@@ -221,6 +221,7 @@ class TestFlushAfterCompression:
                 system_prompt="NEW PROMPT",
             )
             row = db.get_session("s1")
+            assert row is not None
             assert row["system_prompt"] == "NEW PROMPT"
             assert [m["content"] for m in db.get_messages("s1")] == [
                 "[CONTEXT COMPACTION] summary",
@@ -242,7 +243,9 @@ class TestFlushAfterCompression:
                     system_prompt="SHOULD NOT LAND",
                 )
             assert [m["content"] for m in db.get_messages("s1")] == before
-            assert db.get_session("s1")["system_prompt"] == "OLD PROMPT"
+            session = db.get_session("s1")
+            assert session is not None
+            assert session["system_prompt"] == "OLD PROMPT"
 
     def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
         """An aborted retry must survive flush, restart, and resume."""
