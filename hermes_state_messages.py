@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -119,6 +119,9 @@ def _stale_holder(row, now: float) -> bool:
 
 class SessionMessagesMixin:
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
+
+    _store_system_prompt: Callable[..., Optional[str]]
+    _delete_unreferenced_system_prompts: Callable[..., None]
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
@@ -1018,6 +1021,12 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            if system_prompt is not None:
+                prompt_hash = self._store_system_prompt(conn, system_prompt)
+                conn.execute(
+                    "UPDATE sessions SET system_prompt_hash = ?, system_prompt = NULL WHERE id = ?",
+                    (prompt_hash, session_id))
+                self._delete_unreferenced_system_prompts(conn)
             proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held, watermark)
             if proved is not None:
                 return self._archive_named_rows(
@@ -1059,30 +1068,8 @@ class SessionMessagesMixin:
             # A carried copy whose stored identity was computed differently lands in its own
             # display_order group and would project twice; re-fold before publishing (#122167).
             self._reconcile_display_orders(conn, session_id)
-            # message_count / tool_call_count reflect the LIVE (active) set —
-            # the archived rows are still on disk but not part of the live count.
-            # system_prompt, when given, is persisted in this same write so an
-            # in-place compaction cannot leave transcript and prompt on opposite
-            # sides of a crash (#84722).
-            system_prompt_hash = None
-            if system_prompt is not None:
-                system_prompt_hash = self._store_system_prompt(conn, system_prompt)
-            sets = ["message_count = ?", "tool_call_count = ?"]
-            params: list = [inserted, tool_calls_total]
-            if patch:
-                sets.append("model_config = ?")
-                params.append(patched_model_config)
-            if system_prompt is not None:
-                sets.append("system_prompt_hash = ?")
-                sets.append("system_prompt = NULL")
-                params.append(system_prompt_hash)
-            params.append(session_id)
-            conn.execute(
-                f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?",
-                params,
-            )
-            if system_prompt is not None:
-                self._delete_unreferenced_system_prompts(conn)
+            conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
+                (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted
         return self._execute_transcript_write(_do, compacted_messages)
 
