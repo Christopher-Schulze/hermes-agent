@@ -8,7 +8,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from agent.context_compressor import (
     _DB_PERSISTED_MARKER as _DB_PERSISTED_MARKER_KEY, MODEL_ONLY_DISPLAY_METADATA_KEY, _is_checkpoint_item,
@@ -119,6 +119,9 @@ def _stale_holder(row, now: float) -> bool:
 
 class SessionMessagesMixin:
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe."""
+
+    _store_system_prompt: Callable[..., Optional[str]]
+    _delete_unreferenced_system_prompts: Callable[..., None]
 
     def _bump_conversation_generation(self, conn, session_id: str, end_reason: str) -> None:
         """Advance the peer's conversation generation past a boundary, in the txn that writes it. Only
