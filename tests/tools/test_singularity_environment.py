@@ -32,7 +32,7 @@ class TestSnapshotStore:
 
         store = tmp_path / "snap.json"
         store.write_text('{"task1": "/overlay1"}')
-        monkeypatch.setattr(sing, "_SNAPSHOT_STORE", store)
+        monkeypatch.setattr(sing, "_snapshot_store", lambda: store)
         result = sing._load_snapshots()
         assert result == {"task1": "/overlay1"}
 
@@ -40,14 +40,14 @@ class TestSnapshotStore:
         import tools.environments.singularity as sing
 
         store = tmp_path / "nonexistent.json"
-        monkeypatch.setattr(sing, "_SNAPSHOT_STORE", store)
+        monkeypatch.setattr(sing, "_snapshot_store", lambda: store)
         assert sing._load_snapshots() == {}
 
     def test_save_snapshots_writes_json(self, tmp_path, monkeypatch):
         import tools.environments.singularity as sing
 
         store = tmp_path / "snap.json"
-        monkeypatch.setattr(sing, "_SNAPSHOT_STORE", store)
+        monkeypatch.setattr(sing, "_snapshot_store", lambda: store)
         sing._save_snapshots({"taskA": "/ovr-A"})
         assert store.exists()
         import json
