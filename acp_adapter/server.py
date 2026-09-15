@@ -21,7 +21,7 @@ from acp.schema import (
     McpServerStdio, NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
     SessionCapabilities, SessionConfigOptionSelect, SessionConfigSelectOption, SessionForkCapabilities,
     SessionInfo, SessionInfoUpdate, SessionListCapabilities, SessionMode, SessionModeState,
-    SessionResumeCapabilities, SetSessionConfigOptionResponse, SetSessionModeResponse, SetSessionModelResponse, TextContentBlock,
+    SessionResumeCapabilities, SetSessionConfigOptionResponse, SetSessionModeResponse, TextContentBlock,
     Usage, UsageUpdate, UserMessageChunk,
 )
 
@@ -963,21 +963,6 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     def _apply_model_choice(self, model_id: str, state: SessionState) -> None:
         """Switch the model for a session. Mutates ``state`` in place."""
         self._switch_model(state, model_id, keep_endpoint=True)
-
-    async def set_session_model(self, model_id: str, session_id: str, **kwargs: Any) -> SetSessionModelResponse | None:
-        """Switch the model for a session (called by ACP protocol)."""
-        state = self.session_manager.get_session(session_id)
-        if state:
-            # switch_model() does synchronous network I/O (models.dev, custom-endpoint probes,
-            # ~10 s cold) — off the loop, like the gateway, so other ACP sessions keep flowing.
-            _old, requested_provider, resolved_model = await asyncio.to_thread(
-                self._switch_model, state, model_id, keep_endpoint=True)
-            logger.info(
-                "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
-            )
-            return SetSessionModelResponse()
-        logger.warning("Session %s: model switch requested for missing session", session_id)
-        return None
 
     async def set_session_mode(self, mode_id: str, session_id: str, **kwargs: Any) -> SetSessionModeResponse | None:
         """Persist the editor-requested mode so ACP clients do not fail on mode switches."""
