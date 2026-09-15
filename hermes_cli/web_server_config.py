@@ -527,8 +527,9 @@ def _validated_main_model_selection(
     # The submitted endpoint is seeded as a current bare-``custom`` route so the credential step
     # keeps it: arriving from another provider it re-resolves ``custom`` from config and would
     # validate the saved ``model.base_url`` (and its key) instead of the endpoint being saved.
+    switch_provider = "custom" if provider_norm.startswith("custom:") else provider
     result = switch_model(
-        raw_input=model, explicit_provider=provider, is_global=True,
+        raw_input=model, explicit_provider=switch_provider, is_global=True,
         current_provider="custom" if explicit_endpoint else str(model_cfg.get("provider") or ""),
         current_model=str(model_cfg.get("default") or ""),
         current_base_url=base_url if is_custom_endpoint else str(model_cfg.get("base_url") or ""),
@@ -842,8 +843,12 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     from hermes_cli.free_tier_bootstrap import reconcile_record
     # Recorded from the SUBMITTED args, before preparation fills a URL from a named entry.
     explicit_endpoint = _is_explicit_custom_endpoint(provider, base_url)
+    requested_provider = provider
     base_url, result = prepared or _prepare_main_assignment(cfg, provider, model, base_url, api_key)
     provider, model = result.target_provider, result.new_model
+    if requested_provider.strip().lower().startswith("custom:"):
+        provider = requested_provider.strip()
+        result = replace(result, target_provider=provider)
     provider_entry = _provider_entry(cfg, provider)
     # Snapshot BEFORE the new assignment overwrites cfg["model"]: this is the state the user
     # (CLI setup, a prior dashboard save) already had on disk, and it decides whether the
