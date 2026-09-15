@@ -1107,6 +1107,8 @@ class TestApplyAddDeleteErrors:
         assert err is None
 
         class FakeFileOps:
+            def read_file_raw(self, path):
+                return SimpleNamespace(content=None, error="file not found")
             def write_file(self, path, content):
                 return SimpleNamespace(error="disk full")
 
