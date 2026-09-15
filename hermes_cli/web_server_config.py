@@ -17,7 +17,7 @@ from hermes_cli.config import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from hermes_cli.model_assignment import (
-    apply_main_model_assignment as _apply_main_model_assignment,
+    apply_main_model_assignment,
     persist_custom_endpoint_secret,
 )
 
@@ -461,12 +461,13 @@ def _validated_main_model_selection(
     from hermes_cli.model_switch import switch_model
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-    is_bare_custom = provider.strip().lower() in {"custom", "local"}
+    provider_norm = provider.strip().lower()
+    is_custom_endpoint = provider_norm in {"custom", "local"} or provider_norm.startswith("custom:")
     result = switch_model(
         raw_input=model, explicit_provider=provider, is_global=True,
         current_provider=str(model_cfg.get("provider") or ""), current_model=str(model_cfg.get("default") or ""),
-        current_base_url=base_url if is_bare_custom else str(model_cfg.get("base_url") or ""),
-        current_api_key=api_key if is_bare_custom else "",
+        current_base_url=base_url if is_custom_endpoint else str(model_cfg.get("base_url") or ""),
+        current_api_key=api_key if is_custom_endpoint else "",
         user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
         custom_providers=get_compatible_custom_providers(cfg))
     if not result.success:
@@ -475,23 +476,26 @@ def _validated_main_model_selection(
 
 
 def _apply_main_model_assignment(
-    model_cfg: "Any", result: "ModelSwitchResult", api_key: str = "", key_env: str = ""
+    model_cfg: "Any",
+    result: "ModelSwitchResult",
+    api_key: str = "",
+    key_env: str = "",
+    base_url: str = "",
 ) -> dict:
-    """Apply a main-slot selection via ``apply_model_selection``. Custom secrets go to
-    ``key_env`` (secret in ``.env``); a leftover plaintext ``api_key`` is only kept when no
-    env binding was produced."""
+    """Apply a main-slot selection via ``apply_model_selection``, then the shared
+    persist/clear rules so custom secrets stay in ``key_env`` and a host change
+    drops the previous binding."""
     from hermes_cli.model_switch import apply_model_selection
 
     model_cfg = apply_model_selection(model_cfg, result)
-    if key_env.strip():
-        model_cfg["key_env"] = key_env.strip()
-        model_cfg.pop("api_key_env", None)
-        model_cfg.pop("api_key", None)
-        model_cfg.pop("api", None)
-    elif api_key.strip():
-        model_cfg["api_key"] = api_key.strip()
-        model_cfg.pop("api", None)
-    return model_cfg
+    return apply_main_model_assignment(
+        model_cfg,
+        result.target_provider,
+        result.new_model,
+        base_url,
+        api_key,
+        key_env,
+    )
 
 
 
@@ -690,7 +694,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = _apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env
+        cfg.get("model", {}), result, api_key, assignment_key_env, base_url
     )
     if not assignment_key_env and not api_key:
         _resolve_assignment_credentials(model_cfg, provider, provider_entry)
