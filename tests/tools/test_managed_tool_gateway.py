@@ -111,10 +111,10 @@ class TestReadNousProviderState:
         result = _read_nous_provider_state()
         assert result == {"access_token": "TOK", "expires_at": "2026-01-01T00:00:00Z"}
 
-    def test_returns_empty_dict_when_no_nous_provider(self, hermes_home):
-        """providers.get("nous", {}) returns {} which is a dict → returned as-is."""
+    def test_returns_none_when_no_nous_provider(self, hermes_home):
+        """No Nous identity is invisible: get_provider_auth_state returns None, not {}."""
         _write_auth_file(hermes_home, {"other": {"access_token": "TOK"}})
-        assert _read_nous_provider_state() == {}
+        assert _read_nous_provider_state() is None
 
     def test_returns_none_when_providers_not_dict(self, hermes_home):
         _write_auth_file(hermes_home, {})
@@ -138,10 +138,10 @@ class TestReadNousProviderState:
         (hermes_home / "auth.json").mkdir()
         assert _read_nous_provider_state() is None
 
-    def test_returns_empty_dict_when_providers_key_missing(self, hermes_home):
-        """data.get("providers", {}) returns {} → nous defaults to {} → returned."""
+    def test_returns_none_when_providers_key_missing(self, hermes_home):
+        """A store without providers has no Nous identity."""
         (hermes_home / "auth.json").write_text(json.dumps({"other_key": 42}))
-        assert _read_nous_provider_state() == {}
+        assert _read_nous_provider_state() is None
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +461,9 @@ class TestReadNousAccessToken:
                 raise ImportError("module not found")
             return original_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=failing_import):
+        nous_state = {"access_token": "stale-tok", "expires_at": soon}
+        with patch.object(managed_tool_gateway, "_read_nous_provider_state", return_value=nous_state), \
+            patch("builtins.__import__", side_effect=failing_import):
             assert read_nous_access_token() == "stale-tok"
 
     def test_returns_none_when_no_cached_and_refresh_returns_none(
@@ -479,7 +481,7 @@ class TestReadNousAccessToken:
         with patch("hermes_cli.auth.resolve_nous_access_token", return_value=None):
             assert read_nous_access_token() is None
 
-    def test_returns_fresh_when_no_cached_but_refresh_succeeds(
+    def test_returns_none_when_no_nous_identity_even_if_refresh_would_succeed(
         self, clean_env, hermes_home, monkeypatch
     ):
         monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
@@ -487,7 +489,7 @@ class TestReadNousAccessToken:
         with patch(
             "hermes_cli.auth.resolve_nous_access_token", return_value="fresh-token"
         ):
-            assert read_nous_access_token() == "fresh-token"
+            assert read_nous_access_token() is None
 
     def test_returns_cached_when_expires_at_missing(
         self, clean_env, hermes_home, monkeypatch
