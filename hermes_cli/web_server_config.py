@@ -558,6 +558,7 @@ def _apply_main_model_assignment(
     api_key: str = "",
     key_env: str = "",
     base_url: str = "",
+    provider: str = "",
 ) -> dict:
     """Apply a main-slot selection while preserving the credential binding and remote masks."""
     from hermes_cli.config_backend import supports_file_tooling
@@ -570,6 +571,8 @@ def _apply_main_model_assignment(
     endpoint_changed = bool(base_url.strip() and old_url and base_url.strip().rstrip("/") != old_url)
     # Remote Config: the caller saves the effective block as a whole document, so a cleared
     # inherited key must be masked (null), and a locked route key refuses the whole assignment.
+    if provider and provider != result.target_provider:
+        result = replace(result, target_provider=provider)
     model_cfg = apply_model_selection(model_cfg, result, mask_cleared=not supports_file_tooling())
     if key_env.strip():
         model_cfg["key_env"] = key_env.strip()
@@ -861,7 +864,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = _apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env, base_url
+        cfg.get("model", {}), result, api_key, assignment_key_env, base_url, provider
     )
     if not assignment_key_env and not api_key and not (
         explicit_endpoint and _entry_points_elsewhere(provider_entry, base_url)
