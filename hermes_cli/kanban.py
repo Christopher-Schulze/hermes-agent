@@ -599,10 +599,11 @@ def _dirty_worktree_refusal(conn, task_id: str) -> Optional[str]:
     """Advisory refusal message when the task worktree is dirty, else None.
 
     CLI-only guard (#101788): reclaiming a task whose worktree holds
-    uncommitted work lets the next takeover rebase/reset it away. Any
+    uncommitted work lets the next takeover rebase/reset it away. Used
+    by ``kanban reclaim`` and ``kanban reassign --reclaim``. Any
     inspection failure returns None (clean) so this can never block a
-    reclaim — advisory by construction. The dispatcher's automatic
-    stale-claim reclaim calls ``reclaim_task`` directly and is untouched.
+    reclaim. The dispatcher's automatic stale-claim reclaim calls
+    ``reclaim_task`` directly and is untouched.
     """
     try:
         task = kb.get_task(conn, task_id)
@@ -654,7 +655,13 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     reclaim = bool(getattr(args, "reclaim", False))
+    force = bool(getattr(args, "force", False))
     with kbc.connect_closing() as conn:
+        if reclaim and not force:
+            refusal = _dirty_worktree_refusal(conn, args.task_id)
+            if refusal is not None:
+                print(refusal, file=sys.stderr)
+                return 1
         ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
     return _ok_or_err(
         ok,

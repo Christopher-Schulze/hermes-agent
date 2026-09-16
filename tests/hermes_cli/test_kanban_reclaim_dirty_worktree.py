@@ -1,4 +1,5 @@
-"""Tests: `kanban reclaim` refuses a dirty worktree unless --force (issue #101788).
+"""Tests: `kanban reclaim` and `kanban reassign --reclaim` refuse a dirty
+worktree unless --force (issue #101788).
 
 Reclaiming a task whose worktree holds uncommitted work lets the next
 takeover rebase/reset it away. The CLI guard lists what is at risk and
@@ -72,6 +73,12 @@ def _reclaim_ns(task_id, *, force=False):
     return argparse.Namespace(task_id=task_id, reason=None, force=force)
 
 
+def _reassign_ns(task_id, profile="other", *, reclaim=False, force=False):
+    return argparse.Namespace(
+        task_id=task_id, profile=profile, reason=None, reclaim=reclaim, force=force,
+    )
+
+
 @needs_git
 def test_reclaim_clean_worktree_succeeds(kanban_home, tmp_path, capsys):
     tree = _make_repo(tmp_path / "tree-clean")
@@ -136,3 +143,38 @@ def test_reclaim_missing_worktree_path_fails_clean(kanban_home, tmp_path, capsys
         kb.claim_task(conn, tid, claimer="test-host:worker")
     rc = kb_cli._cmd_reclaim(_reclaim_ns(tid))
     assert rc == 0
+
+
+@needs_git
+def test_reassign_reclaim_dirty_worktree_refuses_and_keeps_claim(
+    kanban_home, tmp_path, capsys
+):
+    tree = _make_repo(tmp_path / "tree-reassign-dirty")
+    (tree / "wip.txt").write_text("uncommitted fix\n", encoding="utf-8")
+    with _kb_connect() as conn:
+        tid = _running_task_with_worktree(conn, tree)
+        before = kb.get_task(conn, tid).assignee
+    rc = kb_cli._cmd_reassign(_reassign_ns(tid, reclaim=True))
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "wip.txt" in err
+    assert "--force" in err
+    with _kb_connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.claim_lock is not None
+        assert task.assignee == before
+
+
+@needs_git
+def test_reassign_reclaim_dirty_worktree_force_overrides(kanban_home, tmp_path):
+    tree = _make_repo(tmp_path / "tree-reassign-force")
+    (tree / "wip.txt").write_text("uncommitted fix\n", encoding="utf-8")
+    with _kb_connect() as conn:
+        tid = _running_task_with_worktree(conn, tree)
+    rc = kb_cli._cmd_reassign(_reassign_ns(tid, "other", reclaim=True, force=True))
+    assert rc == 0
+    with _kb_connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task.status != "running"
+        assert task.assignee == "other"

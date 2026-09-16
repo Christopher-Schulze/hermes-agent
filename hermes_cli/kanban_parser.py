@@ -247,6 +247,8 @@ _SPECS = [
         _arg("profile", help="New profile name (or 'none' to unassign)"),
         _arg("--reclaim", action="store_true",
              help="Release any active claim before reassigning (required if task is running)"),
+        _arg("--force", action="store_true",
+             help="With --reclaim, proceed even when the task worktree holds uncommitted work"),
         _RECLAIM_REASON,
     ], help="Reassign a task to a different profile, optionally reclaiming first"),
     _cmd("diagnostics", [
