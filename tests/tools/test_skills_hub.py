@@ -2267,6 +2267,30 @@ class TestGitHubSourceFetchMissingReferencedFile:
         assert bundle.files["scripts/run.py"] == b"content"
         assert bundle.files["references/guide.md"] == b"content"
 
+    def test_fetch_skips_directory_reference_without_trailing_slash(self):
+        md = (
+            "---\nname: demo\ndescription: demo\n---\n\n"
+            "Helpers live in `scripts/lib` and [guide](references/guide.md).\n"
+        )
+        tree_entries = [
+            {"path": "skills/demo/scripts", "type": "tree", "mode": "040000"},
+            {"path": "skills/demo/scripts/lib", "type": "tree", "mode": "040000"},
+            {"path": "skills/demo/scripts/lib/helper.py", "type": "blob", "mode": "100644"},
+            {"path": "skills/demo/references", "type": "tree", "mode": "040000"},
+            {"path": "skills/demo/references/guide.md", "type": "blob", "mode": "100644"},
+        ]
+        source = self._source()
+        with patch.object(source, "_fetch_file_content", return_value=md), \
+             patch.object(source, "_get_repo_tree", return_value=("main", tree_entries)), \
+             patch.object(source, "_fetch_file_bytes", side_effect=lambda repo, path, ref=None: b"content"):
+            bundle = source.fetch("owner/repo/skills/demo")
+
+        assert bundle is not None
+        assert bundle.name == "demo"
+        assert "scripts/lib" not in bundle.files
+        assert bundle.files["scripts/lib/helper.py"] == b"content"
+        assert bundle.files["references/guide.md"] == b"content"
+
 
 class TestUrlSourceFetchMissingReferencedFile:
     def test_fetch_skips_missing_referenced_file(self):
