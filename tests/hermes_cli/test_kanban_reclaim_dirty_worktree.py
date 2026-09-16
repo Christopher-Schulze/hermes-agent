@@ -79,6 +79,12 @@ def _reassign_ns(task_id, profile="other", *, reclaim=False, force=False):
     )
 
 
+def _require_task(conn, task_id: str):
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    return task
+
+
 @needs_git
 def test_reclaim_clean_worktree_succeeds(kanban_home, tmp_path, capsys):
     tree = _make_repo(tmp_path / "tree-clean")
@@ -87,7 +93,7 @@ def test_reclaim_clean_worktree_succeeds(kanban_home, tmp_path, capsys):
     rc = kb_cli._cmd_reclaim(_reclaim_ns(tid))
     assert rc == 0
     with _kb_connect() as conn:
-        assert kb.get_task(conn, tid).status != "running"
+        assert _require_task(conn, tid).status != "running"
 
 
 @needs_git
@@ -105,7 +111,7 @@ def test_reclaim_dirty_worktree_refuses_and_keeps_claim(
     assert "wip.txt" in err
     assert "--force" in err
     with _kb_connect() as conn:
-        task = kb.get_task(conn, tid)
+        task = _require_task(conn, tid)
         assert task.status == "running"
         assert task.claim_lock is not None
 
@@ -119,7 +125,7 @@ def test_reclaim_dirty_worktree_force_overrides(kanban_home, tmp_path, capsys):
     rc = kb_cli._cmd_reclaim(_reclaim_ns(tid, force=True))
     assert rc == 0
     with _kb_connect() as conn:
-        assert kb.get_task(conn, tid).status != "running"
+        assert _require_task(conn, tid).status != "running"
 
 
 @needs_git
@@ -153,14 +159,14 @@ def test_reassign_reclaim_dirty_worktree_refuses_and_keeps_claim(
     (tree / "wip.txt").write_text("uncommitted fix\n", encoding="utf-8")
     with _kb_connect() as conn:
         tid = _running_task_with_worktree(conn, tree)
-        before = kb.get_task(conn, tid).assignee
+        before = _require_task(conn, tid).assignee
     rc = kb_cli._cmd_reassign(_reassign_ns(tid, reclaim=True))
     assert rc == 1
     err = capsys.readouterr().err
     assert "wip.txt" in err
     assert "--force" in err
     with _kb_connect() as conn:
-        task = kb.get_task(conn, tid)
+        task = _require_task(conn, tid)
         assert task.status == "running"
         assert task.claim_lock is not None
         assert task.assignee == before
@@ -175,6 +181,6 @@ def test_reassign_reclaim_dirty_worktree_force_overrides(kanban_home, tmp_path):
     rc = kb_cli._cmd_reassign(_reassign_ns(tid, "other", reclaim=True, force=True))
     assert rc == 0
     with _kb_connect() as conn:
-        task = kb.get_task(conn, tid)
+        task = _require_task(conn, tid)
         assert task.status != "running"
         assert task.assignee == "other"
