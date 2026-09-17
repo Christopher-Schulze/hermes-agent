@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
-_APPROVAL_ID_RE = re.compile(r"[0-9a-f]{12}\Z")
+try:
+    # tools/approval.py owns the generated approval-id shape (uuid4().hex[:12]);
+    # the bridge applies the same pattern to externally supplied ids.
+    from tools.approval import _APPROVAL_ID_RE
+except ImportError:
+    _APPROVAL_ID_RE = re.compile(r"[0-9a-f]{12}\Z")
 
 # mcp 2.0 removed `mcp.server.fastmcp`; `mcp.server.MCPServer` keeps the same
 # `@server.tool()` / `run_stdio_async()` surface (docstring -> description,
@@ -448,7 +453,10 @@ class EventBridge:
                     record["id"] = approval_id
                 expires_at = record.get("expires_at")
                 if isinstance(expires_at, (int, float)) and expires_at <= now:
-                    continue  # stale leftover from a dead gateway — ignore
+                    # Stale leftover from a dead gateway — ignore it, but do not
+                    # delete it here: cleanup is gateway-owned (the next
+                    # _publish_pending_approval sweeps expired records).
+                    continue
                 seen[approval_id] = record
 
             events = []
