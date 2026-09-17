@@ -75,8 +75,11 @@ def _start_wait(notify_cb=None, session_key=SESSION_KEY):
     return t, box
 
 
-def _assert_decision(result, *, resolved, choice, reason=None):
-    assert result == {"resolved": resolved, "choice": choice, "reason": reason}
+def _assert_decision(result, *, resolved, choice, reason=None, cancelled=None):
+    expected = {"resolved": resolved, "choice": choice, "reason": reason}
+    if cancelled is not None:
+        expected["cancelled"] = cancelled
+    assert result == expected
 
 
 def _wait_for(predicate, timeout=5.0, interval=0.05):
@@ -171,7 +174,8 @@ class TestPublishLifecycle:
 
         thread, box = _start_wait()
         thread.join(timeout=5)
-        _assert_decision(box["result"], resolved=True, choice="deny")
+        _assert_decision(box["result"], resolved=True, choice="deny",
+                         cancelled="turn interrupted")
         assert not _pending_files(tmp_path)
 
 
