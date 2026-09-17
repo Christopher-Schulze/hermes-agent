@@ -6,7 +6,6 @@ get_tool_gateway_scheme, build_vendor_gateway_url,
 resolve_managed_tool_gateway, is_managed_tool_gateway_ready.
 """
 
-import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone, UTC
@@ -1224,4 +1223,3 @@ class TestManagedMediaUploader:
             uploader = self._uploader()
         with pytest.raises(RuntimeError, match="storage refused the upload"):
             self._run(uploader, put=self._response(403))
-
