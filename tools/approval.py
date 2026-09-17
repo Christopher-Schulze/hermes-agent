@@ -17,6 +17,7 @@ import importlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -140,6 +141,11 @@ _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval
 
 _EXTERNAL_DECISIONS = frozenset({"once", "session", "always", "deny"})
 _RESPONSE_STALE_SECONDS = 3600  # orphaned response files are swept after this
+# Approval ids are generated as uuid4().hex[:12] (approval_gateway_wait.py) —
+# only that shape may ever be joined into a handshake path. The MCP bridge
+# validates the same pattern on externally supplied ids; these helpers apply it
+# symmetrically so a future caller cannot turn them into a traversal sink.
+_APPROVAL_ID_RE = re.compile(r"[0-9a-f]{12}\Z")
 
 
 def approvals_pending_dir() -> Path:
@@ -162,6 +168,10 @@ def _publish_pending_approval(approval_id: str, session_key: str,
     Best-effort: a publish failure must never break the in-process approval
     flow, so errors are logged and swallowed.
     """
+    if not _APPROVAL_ID_RE.fullmatch(str(approval_id)):
+        logger.warning("Refusing to publish pending approval under "
+                       "non-generated id %r", approval_id)
+        return
     try:
         now = time.time()
         primary_key = approval_data.get("pattern_key", "")
@@ -189,6 +199,8 @@ def _publish_pending_approval(approval_id: str, session_key: str,
 
 def _retract_pending_approval(approval_id: str) -> None:
     """Remove the mirrored record (and any unconsumed response) for an entry."""
+    if not _APPROVAL_ID_RE.fullmatch(str(approval_id)):
+        return
     for path in (approvals_pending_dir() / f"{approval_id}.json",
                  approvals_responses_dir() / f"{approval_id}.json"):
         try:
@@ -206,6 +218,8 @@ def _consume_external_decision(approval_id: str) -> Optional[str]:
     discarded so a supervisor can retry — fail closed, never resolve on
     garbage.
     """
+    if not _APPROVAL_ID_RE.fullmatch(str(approval_id)):
+        return None
     path = approvals_responses_dir() / f"{approval_id}.json"
     try:
         if not path.exists():
