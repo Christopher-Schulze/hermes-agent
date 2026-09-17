@@ -261,8 +261,24 @@ class TestApprovalIdValidation:
     into a traversal sink.
     """
 
+    def test_traversal_ids_cannot_escape_the_handshake_dirs(self, tmp_path):
+        """``../../`` ids must never read, delete, or write outside the dirs."""
+        from tools import approval as mod
+
+        sentinel = tmp_path / "sessions" / "sessions.json"
+        sentinel.parent.mkdir(parents=True)
+        sentinel.write_text('{"safe": true}', encoding="utf-8")
+        bad = "../../sessions/sessions"
+
+        assert mod._consume_external_decision(bad) is None
+        mod._retract_pending_approval(bad)
+        mod._publish_pending_approval(
+            bad, SESSION_KEY, dict(APPROVAL_DATA), 60, "gateway")
+
+        assert sentinel.read_text(encoding="utf-8") == '{"safe": true}'
+        assert not _pending_files(tmp_path)
+
     @pytest.mark.parametrize("bad_id", [
-        "../../sessions/sessions",
         "../responses/foo",
         "..",
         "ABCDEF123456",   # uppercase — ids are lowercase hex
@@ -275,13 +291,7 @@ class TestApprovalIdValidation:
         from tools import approval as mod
 
         assert mod._consume_external_decision(bad_id) is None
-
-        escape = tmp_path / "approvals" / "escape.json"
-        escape.parent.mkdir(parents=True, exist_ok=True)
-        escape.write_text(json.dumps({"decision": "deny"}))
         mod._retract_pending_approval(bad_id)
-        assert escape.exists(), "retract must not touch paths outside the id"
-
         mod._publish_pending_approval(
             bad_id, SESSION_KEY, dict(APPROVAL_DATA), 60, "gateway")
         assert not _pending_files(tmp_path), \
