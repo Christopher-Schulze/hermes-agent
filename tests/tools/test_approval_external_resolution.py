@@ -253,6 +253,47 @@ class TestExternalDecision:
         assert not response_path.exists()
 
 
+class TestApprovalIdValidation:
+    """Handshake helpers only touch paths under a generated 12-hex id.
+
+    The MCP bridge validates externally supplied ids; the approval.py helpers
+    apply the same shape symmetrically so a future caller cannot turn them
+    into a traversal sink.
+    """
+
+    @pytest.mark.parametrize("bad_id", [
+        "../../sessions/sessions",
+        "../responses/foo",
+        "..",
+        "ABCDEF123456",   # uppercase — ids are lowercase hex
+        "abc123",         # too short
+        "abc123def4567",  # too long
+        "abc123def45g",   # non-hex
+        "",
+    ])
+    def test_helpers_reject_non_generated_ids(self, tmp_path, bad_id):
+        from tools import approval as mod
+
+        assert mod._consume_external_decision(bad_id) is None
+
+        escape = tmp_path / "approvals" / "escape.json"
+        escape.parent.mkdir(parents=True, exist_ok=True)
+        escape.write_text(json.dumps({"decision": "deny"}))
+        mod._retract_pending_approval(bad_id)
+        assert escape.exists(), "retract must not touch paths outside the id"
+
+        mod._publish_pending_approval(
+            bad_id, SESSION_KEY, dict(APPROVAL_DATA), 60, "gateway")
+        assert not _pending_files(tmp_path), \
+            "publish must not mirror under a non-generated id"
+
+    def test_consume_still_reads_valid_response(self, tmp_path):
+        from tools import approval as mod
+        approval_id = "abc123def456"
+        _write_response(tmp_path, approval_id, {"decision": "session"})
+        assert mod._consume_external_decision(approval_id) == "session"
+
+
 class TestStaleSweep:
     def test_live_pending_preserves_old_response_until_expiry(self, tmp_path):
         from tools import approval as mod
@@ -291,10 +332,10 @@ class TestStaleSweep:
         os.utime(old_response, (now - 7200, now - 7200))
 
         mod._publish_pending_approval(
-            "fresh", "session-x", dict(APPROVAL_DATA), 60, "gateway")
+            "f6e5d4c3b2a1", "session-x", dict(APPROVAL_DATA), 60, "gateway")
 
         names = {p.name for p in _pending_files(tmp_path)}
-        assert names == {"alive.json", "fresh.json"}
+        assert names == {"alive.json", "f6e5d4c3b2a1.json"}
         assert not old_response.exists()
 
 
