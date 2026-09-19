@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 from tools.skills_sync_client_wire import (
     ObjectSet, SyncClient, SyncConflict, SyncError, assemble_root_from_skill_trees, build_commit, build_tree,
     checked_capabilities, materialize_tree, read_ref_hash, root_tree_of_commit, skill_trees_of_root)
+from tools.skills_sync_optional import _is_runtime_cache
 
 logger = logging.getLogger("tools.skills_sync_client")
 ORG_DIR_NAME = "_org"
@@ -88,10 +89,14 @@ def _write_sidecar(what: str, path_fn: Callable[[], Path], text: str) -> None:
 
 
 def _skill_dir_fingerprint(path: Path) -> str:
-    """Content hash of a skill dir (sorted relative path + bytes; mtime-independent). "" on read failure."""
+    """Content hash of a skill dir (sorted relative path + bytes; mtime-independent). "" on read failure.
+
+    Generated runtime caches are not content: a mirrored skill that was merely imported must
+    not read as locally modified, and the same exclusion keeps this fingerprint aligned with
+    the synced tree (`build_tree`)."""
     h = hashlib.sha256()
     try:
-        for f in sorted(p for p in path.rglob("*") if p.is_file()):
+        for f in sorted(p for p in path.rglob("*") if p.is_file() and not _is_runtime_cache(p, path)):
             h.update(str(f.relative_to(path)).replace("\\", "/").encode("utf-8"))
             h.update(b"\0")
             h.update(f.read_bytes())

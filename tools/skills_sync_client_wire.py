@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
+from tools.skills_sync_optional import _is_runtime_cache
+
 logger = logging.getLogger("tools.skills_sync_client")
 WIRE_VERSION = "1"
 DEFAULT_MAX_OBJECT_BYTES = 26214400  # 25 MiB, mirrors capabilities default
@@ -108,11 +110,15 @@ def _file_mode(path: Path) -> str:
 
 def build_tree(dir_path: Path, objects: ObjectSet, *, max_object_bytes: int) -> str:
     """Build objects for *dir_path* recursively; return the tree address. Symlinks/special files are
-    skipped (contract). A blob over *max_object_bytes* raises ValueError (server would 413)."""
+    skipped (contract), and so is generated Python runtime state (`__pycache__`, sibling bytecode):
+    it is a by-product of running the skill, not content, and would make identical skills hash
+    differently per device. A blob over *max_object_bytes* raises ValueError (server would 413)."""
     entries: List[Dict[str, str]] = []
     for child in sorted(dir_path.iterdir(), key=lambda p: p.name):
         if child.is_symlink():
             logger.debug("skills_sync_client: skipping symlink %s", child)
+        elif _is_runtime_cache(child, dir_path):
+            continue
         elif child.is_dir():
             entries.append(_entry(child.name, KIND_TREE, build_tree(child, objects, max_object_bytes=max_object_bytes),
                                   MODE_DIR))

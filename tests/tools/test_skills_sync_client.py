@@ -416,6 +416,29 @@ class TestObjectBuilding:
         with pytest.raises(ValueError):
             ssc.build_tree(d, objects, max_object_bytes=10)
 
+    def test_build_tree_ignores_generated_python_caches(self, tmp_path):
+        # Regression for #94127: running a skill leaves __pycache__ and sibling
+        # bytecode behind; the synced tree identity must not change with them.
+        d = tmp_path / "skill"
+        (d / "scripts").mkdir(parents=True)
+        (d / "SKILL.md").write_text("hello", encoding="utf-8")
+        (d / "scripts" / "run.py").write_text("print('hi')\n", encoding="utf-8")
+        (d / "shipped.pyc").write_bytes(b"deliberately shipped, no .py beside it")
+        pristine = ssc.build_tree(d, ssc.ObjectSet(), max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+
+        (d / "scripts" / "__pycache__").mkdir()
+        (d / "scripts" / "__pycache__" / "run.cpython-311.pyc").write_bytes(b"\x00bytecode")
+        (d / "scripts" / "run.pyc").write_bytes(b"\x00legacy sibling bytecode")
+        objects = ssc.ObjectSet()
+        with_caches = ssc.build_tree(d, objects, max_object_bytes=ssc.DEFAULT_MAX_OBJECT_BYTES)
+        assert with_caches == pristine
+        names = {json.loads(data)["entries"][0]["name"] for kind, data in objects.objects.values()
+                 if kind == wire.KIND_TREE}
+        assert "__pycache__" not in names
+        # Source-less bytecode is content someone chose to ship and stays.
+        root = json.loads(objects.objects[with_caches][1])
+        assert "shipped.pyc" in {e["name"] for e in root["entries"]}
+
     def test_build_commit_shape(self):
         objects = ssc.ObjectSet()
         c = ssc.build_commit(
@@ -811,6 +834,31 @@ class TestEnvConfig:
             lambda: {"alpha": {"sync": True}, "beta": {}, "gamma": {"sync": False}},
         )
         assert ssc.list_synced_skill_names() == ["alpha"]
+
+
+class TestOrgLocalModification:
+    def test_generated_caches_never_make_a_mirrored_skill_locally_modified(self, tmp_path, monkeypatch):
+        # Regression for #94127: importing a pulled org skill writes __pycache__
+        # into the mirror; the baseline fingerprint taken at pull time must still
+        # match, while a real content edit is still detected.
+        monkeypatch.setattr(ssc, "_skills_dir", lambda: tmp_path)
+        dest = org._mirror_root("org1") / "team" / "alpha"
+        (dest / "lib").mkdir(parents=True)
+        (dest / "SKILL.md").write_text("alpha", encoding="utf-8")
+        (dest / "lib" / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
+        org._write_org_baseline("org1", {"team/alpha": {"fingerprint": org._skill_dir_fingerprint(dest),
+                                                        "tree": "sha256:" + "0" * 64}})
+        assert not org.org_skill_is_locally_modified("team/alpha", "org1")
+
+        (dest / "lib" / "__pycache__").mkdir()
+        (dest / "lib" / "__pycache__" / "helper.cpython-311.pyc").write_bytes(b"\x00bytecode")
+        (dest / "lib" / "helper.pyc").write_bytes(b"\x00legacy sibling bytecode")
+        assert not org.org_skill_is_locally_modified("team/alpha", "org1")
+        assert org.list_locally_modified_org_skills("org1") == []
+
+        (dest / "lib" / "helper.py").write_text("VALUE = 2\n", encoding="utf-8")
+        assert org.org_skill_is_locally_modified("team/alpha", "org1")
+        assert org.list_locally_modified_org_skills("org1") == ["team/alpha"]
 
 
 class TestDeviceName:
