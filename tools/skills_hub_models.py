@@ -296,6 +296,9 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         except ValueError:
             return None
         if candidate.endswith("/") or raw.endswith("/"):
+            # A directory named in prose, not a support file; a typo'd file link with a stray
+            # slash lands here too, so the skip stays visible.
+            logger.debug("Skipping trailing-slash SKILL.md reference: %s", candidate)
             continue
         if safe.split("/", 1)[0] in _ALLOWED_SUPPORT_DIRS:
             # Prose placeholders (``references/type-<name>.md``, truncated at ``<`` to
