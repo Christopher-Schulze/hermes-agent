@@ -102,6 +102,38 @@ class TestPeerLookupHelpers:
             "session_id": session.honcho_session_id,
         }])
 
+    def test_list_conclusions_reranks_query_hits_above_recent_misses(self):
+        """Regression for #95266: Honcho query currently returns recency order.
+        A keyword-relevant older conclusion must outrank a recent miss."""
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        recent = SimpleNamespace(id="c-recent", content="User likes tea")
+        relevant = SimpleNamespace(id="c-old", content="User founded neuralancer in 2019")
+        scope.query.return_value = [recent, relevant]
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        result = mgr.list_conclusions(session.key, query="neuralancer")
+
+        assert [row["id"] for row in result] == ["c-old", "c-recent"]
+        scope.query.assert_called_once_with("neuralancer", top_k=20)
+
+    def test_list_conclusions_without_query_keeps_server_order(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        first = SimpleNamespace(id="c1", content="User likes tea")
+        second = SimpleNamespace(id="c2", content="User founded neuralancer in 2019")
+        scope.list.return_value = SimpleNamespace(items=[first, second])
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        result = mgr.list_conclusions(session.key)
+
+        assert [row["id"] for row in result] == ["c1", "c2"]
+        scope.list.assert_called_once_with(size=20)
+
 
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):

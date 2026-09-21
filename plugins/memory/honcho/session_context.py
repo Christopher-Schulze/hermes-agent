@@ -23,6 +23,19 @@ _PLANNING_HEAD_RE = re.compile(
     r"^(?:i need to create a thorough|the instruction says to focus on capturing key facts|first, let me review)",
     re.IGNORECASE,
 )
+_QUERY_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _rerank_conclusions_by_query(query: str, rows: list[dict]) -> list[dict]:
+    """Stable keyword re-rank so query-relevant conclusions beat recency-only hits."""
+    tokens = _QUERY_TOKEN_RE.findall(query.lower())
+    if not tokens:
+        return rows
+    return sorted(
+        rows,
+        key=lambda row: sum(1 for token in tokens if token in str(row.get("content") or "").lower()),
+        reverse=True,
+    )
 
 
 def usable_honcho_summary(text: object) -> str | None:
@@ -307,7 +320,11 @@ class SessionContextMixin:
         )
 
     def list_conclusions(self, session_key: str, query: str | None = None, peer: str = "user", limit: int = 20):
-        """List (or semantically search with ``query``) conclusions as {"id", "content"} dicts."""
+        """List (or search with ``query``) conclusions as {"id", "content"} dicts.
+
+        A ``query`` still uses Honcho ``scope.query``, then re-ranks the page by
+        keyword overlap so a relevant older conclusion beats a recent miss.
+        """
         def _list(session: Any) -> list[dict]:
             target_peer_id = self._resolve_peer_id(session, peer)
             if target_peer_id is None:
@@ -316,7 +333,8 @@ class SessionContextMixin:
             def _fetch() -> Any:
                 scope = self._conclusions_scope(session, target_peer_id)
                 return scope.query(query, top_k=limit) if query else scope.list(size=limit).items
-            return [{"id": c.id, "content": c.content} for c in self._authed_call("conclusion list", _fetch)]
+            rows = [{"id": c.id, "content": c.content} for c in self._authed_call("conclusion list", _fetch)]
+            return _rerank_conclusions_by_query(query, rows) if query else rows
         return self._guarded_session(session_key, _list, [], logging.DEBUG, "Honcho list_conclusions failed: %s")
 
     def set_peer_card(self, session_key: str, card: list[str], peer: str = "user") -> list[str] | None:
