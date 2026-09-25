@@ -134,6 +134,49 @@ class TestPeerLookupHelpers:
         assert [row["id"] for row in result] == ["c1", "c2"]
         scope.list.assert_called_once_with(size=20)
 
+    def _query_manager(self, rows):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        scope.query.return_value = [SimpleNamespace(id=row_id, content=content) for row_id, content in rows]
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        return mgr, session, scope
+
+    def test_list_conclusions_query_matches_whole_words_only(self):
+        """A query term counts only as a complete word: ``rust`` is not inside ``trust``."""
+        mgr, session, scope = self._query_manager([
+            ("c-trust", "User said trust me on this"),
+            ("c-rust", "User is a Rust developer (rust_lang, rust-analyzer)"),
+            ("c-none", "User likes tea"),
+        ])
+
+        result = mgr.list_conclusions(session.key, query="rust RUST")
+
+        assert result == [
+            {"id": "c-rust", "content": "User is a Rust developer (rust_lang, rust-analyzer)"},
+            {"id": "c-trust", "content": "User said trust me on this"},
+            {"id": "c-none", "content": "User likes tea"},
+        ]
+        scope.query.assert_called_once_with("rust RUST", top_k=20)
+
+    def test_list_conclusions_query_matches_unicode_words_and_keeps_ties_in_server_order(self):
+        """Non-Latin and accented query words match after NFC casefolding; ties and a query
+        without words keep the order Honcho returned."""
+        rows = [
+            ("c-tea", "User likes tea"),
+            ("c-city", "User moved to 北京 last year"),
+            ("c-cafe", "User runs a CAFE\u0301 in Lyon"),
+        ]
+        mgr, session, scope = self._query_manager(rows)
+
+        result = mgr.list_conclusions(session.key, query="北京 café")
+
+        assert [row["id"] for row in result] == ["c-city", "c-cafe", "c-tea"]
+        scope.query.assert_called_once_with("北京 café", top_k=20)
+        mgr, session, _ = self._query_manager(rows)
+        assert [row["id"] for row in mgr.list_conclusions(session.key, query="?!")] == ["c-tea", "c-city", "c-cafe"]
+
 
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
