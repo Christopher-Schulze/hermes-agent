@@ -367,13 +367,17 @@ class GitHubSource(SkillSource):
         """Fetch ``(item_path, rel_path)`` blobs into ``files`` in tree order; False when any fetch failed.
         One round-trip at a time made a 199-file upstream skill take ~7 minutes on a high-latency link
         (#107548), so the fetches share a bounded pool. Its workers run in the caller's context and so
-        keep the pooled SSRF-safe client and the profile scope."""
+        keep the pooled SSRF-safe client and the profile scope. An interrupt (Ctrl+C) returns at once:
+        queued fetches are cancelled and in-flight ones finish on daemon workers."""
         if not blobs:
             return True
         from tools.daemon_pool import DaemonThreadPoolExecutor
 
-        with DaemonThreadPoolExecutor(max_workers=min(len(blobs), _BLOB_FETCH_WORKERS)) as pool:
+        pool = DaemonThreadPoolExecutor(max_workers=min(len(blobs), _BLOB_FETCH_WORKERS))
+        try:
             contents = list(pool.map(lambda blob: self._fetch_file_bytes(repo, blob[0], ref=ref), blobs))
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         complete = True
         for (item_path, rel_path), content in zip(blobs, contents):
             if content is None:
