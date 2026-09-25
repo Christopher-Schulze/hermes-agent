@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools.skills_sync_optional import _is_runtime_cache
+from tools.skills_sync_optional import _RUNTIME_CACHE_DIRS, _is_runtime_cache
 
 logger = logging.getLogger("tools.skills_sync_client")
 WIRE_VERSION = "1"
@@ -335,6 +335,32 @@ def materialize_tree(client: SyncClient, tree_hash: str, dest: Path, *, org_scop
             if entry.get("mode") == MODE_EXEC:
                 with suppress(OSError):
                     target.chmod(target.stat().st_mode | _EXEC_BITS)
+
+
+def strip_runtime_caches(client: SyncClient, tree_hash: str, objects: ObjectSet, *, org_scope: bool = False) -> str:
+    """Address *tree_hash* has once built without generated Python runtime state, the way
+    `build_tree` builds today: cache directories and bytecode beside its source are dropped at
+    every level. Only tree objects are read; an old client's cache-bearing tree maps onto the
+    cache-free tree of the same content, and a tree without caches keeps its own address."""
+    entries = client.get_tree_json(tree_hash, org_scope=org_scope).get("entries", [])
+    blobs = {entry.get("name") for entry in entries if entry.get("kind") == KIND_BLOB}
+    kept: List[Dict[str, str]] = []
+    changed = False
+    for entry in entries:
+        name, kind = entry.get("name", ""), entry.get("kind")
+        if kind == KIND_TREE and name in _RUNTIME_CACHE_DIRS:
+            changed = True
+            continue
+        if kind == KIND_BLOB and name.endswith((".pyc", ".pyo")) and f"{name[:-4]}.py" in blobs:
+            changed = True
+            continue
+        if kind == KIND_TREE:
+            stripped = strip_runtime_caches(client, entry["hash"], objects, org_scope=org_scope)
+            if stripped != entry["hash"]:
+                changed = True
+                entry = {**entry, "hash": stripped}
+        kept.append(entry)
+    return _add_tree(kept, objects) if changed else tree_hash
 
 
 def merge_skill(base: Optional[str], ours: Optional[str], theirs: Optional[str]) -> str:

@@ -17,8 +17,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, List, Optional
 
 from tools.skills_sync_client_wire import (
-    ObjectSet, SyncClient, SyncConflict, SyncError, assemble_root_from_skill_trees, build_commit, build_tree,
-    checked_capabilities, materialize_tree, read_ref_hash, root_tree_of_commit, skill_trees_of_root)
+    DEFAULT_MAX_OBJECT_BYTES, ObjectSet, SyncClient, SyncConflict, SyncError, assemble_root_from_skill_trees,
+    build_commit, build_tree, checked_capabilities, materialize_tree, read_ref_hash, root_tree_of_commit,
+    skill_trees_of_root, strip_runtime_caches)
 from tools.skills_sync_optional import _is_runtime_cache
 
 logger = logging.getLogger("tools.skills_sync_client")
@@ -166,28 +167,32 @@ def _clear_active_org_marker() -> None:
 def org_skill_is_locally_modified(skill_rel_path: str, org_id: str) -> bool:
     """Local copy differs from the recorded fingerprint. No baseline => unmodified.
 
-    A cache-free match is unchanged. A match of the pre-#94127 all-files hash is an
-    unchanged legacy mirror: the sidecar is rewritten to the current fingerprint.
-    Any other mismatch stays a real local edit."""
+    Read-only. A cache-free match is unchanged, and so is a match of the pre-#94127
+    all-files hash (a legacy mirror whose caches are untouched); `pull_org_skills` stores
+    the current fingerprint. Any other mismatch reads as a local edit here."""
     dest = _mirror_root(org_id) / PurePosixPath(skill_rel_path)
-    baseline = _read_org_baseline(org_id)
-    entry = baseline.get(skill_rel_path) or {}
+    entry = _read_org_baseline(org_id).get(skill_rel_path) or {}
     recorded = entry.get("fingerprint") if isinstance(entry, dict) else entry
     if not dest.is_dir() or not recorded:
         return False
     current = _skill_dir_fingerprint(dest)
-    if current == recorded:
+    return not current or (current != recorded and _legacy_skill_dir_fingerprint(dest) != recorded)
+
+
+def _matches_baseline_tree(client: SyncClient, entry: Any, dest: Path) -> bool:
+    """The mirror still holds exactly the pulled content once runtime caches are left out of both
+    the recorded upstream tree and the local copy. An old client hashed caches into the baseline, so
+    caches rewritten after that pull break both fingerprints; the tree still settles it. Any read
+    failure keeps the mirror as locally modified."""
+    tree = entry.get("tree") if isinstance(entry, dict) else None
+    if not tree:
         return False
-    if current and _legacy_skill_dir_fingerprint(dest) == recorded:
-        if isinstance(entry, dict):
-            updated = dict(entry)
-            updated["fingerprint"] = current
-            baseline[skill_rel_path] = updated
-        else:
-            baseline[skill_rel_path] = current
-        _write_org_baseline(org_id, baseline)
+    try:
+        pulled = strip_runtime_caches(client, tree, ObjectSet(), org_scope=True)
+        return build_tree(dest, ObjectSet(), max_object_bytes=DEFAULT_MAX_OBJECT_BYTES) == pulled
+    except Exception as e:
+        logger.debug("skills_sync_client: baseline tree check failed for %s: %s", dest, e)
         return False
-    return True
 
 
 def _active_org_id() -> Optional[str]:
@@ -245,8 +250,10 @@ def pull_org_skills(client: Optional[SyncClient] = None, *, identity: Optional[D
         dest = _mirror_root(org_id) / PurePosixPath(rel_path)
         try:
             if dest.exists():
-                if org_skill_is_locally_modified(rel_path, org_id):
-                    if (baseline.get(rel_path) or {}).get("tree") != tree_hash:
+                entry = baseline.get(rel_path) or {}
+                if org_skill_is_locally_modified(rel_path, org_id) and not _matches_baseline_tree(
+                        client, entry, dest):
+                    if (entry.get("tree") if isinstance(entry, dict) else None) != tree_hash:
                         conflicted.append(rel_path)
                     continue
                 shutil.rmtree(dest)
