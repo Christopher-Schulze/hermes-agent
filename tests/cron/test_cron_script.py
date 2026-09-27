@@ -830,3 +830,96 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+class TestScriptTimeoutZeroMeansUnlimited:
+    """An exact 0 disables the script deadline (#100943); anything else keeps a bound."""
+
+    @pytest.fixture(autouse=True)
+    def _no_overrides(self, monkeypatch):
+        from cron import scheduler as sched
+
+        monkeypatch.delenv("HERMES_CRON_SCRIPT_TIMEOUT", raising=False)
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
+        monkeypatch.setattr(sched, "load_config", lambda: {})
+
+    def test_zero_resolves_to_unlimited_from_every_layer(self, monkeypatch):
+        from cron import scheduler as sched
+        from cron.scheduler_script import _get_script_timeout
+
+        monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"script_timeout_seconds": 0}})
+        assert _get_script_timeout() is None
+
+        monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"script_timeout_seconds": 60}})
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "0")
+        assert _get_script_timeout() is None
+
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "60")
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", 0)
+        assert _get_script_timeout() is None
+
+    def test_positive_values_keep_their_bound(self, monkeypatch):
+        from cron import scheduler as sched
+        from cron.scheduler_script import _get_script_timeout
+
+        monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"script_timeout_seconds": 90}})
+        assert _get_script_timeout() == 90
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "30")
+        assert _get_script_timeout() == 30
+
+    @pytest.mark.parametrize("raw", ["-5", "0.5", "abc", "nan", "inf"])
+    def test_invalid_env_warns_and_falls_back(self, monkeypatch, caplog, raw):
+        from cron import scheduler as sched
+        from cron.scheduler_script import _get_script_timeout
+
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", raw)
+        with caplog.at_level("WARNING", logger="cron.scheduler"):
+            assert _get_script_timeout() == sched._DEFAULT_SCRIPT_TIMEOUT
+        assert "Invalid HERMES_CRON_SCRIPT_TIMEOUT" in caplog.text
+
+        monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"script_timeout_seconds": 45}})
+        assert _get_script_timeout() == 45
+
+    @pytest.mark.parametrize("raw", [-1, "-30", "never"])
+    def test_invalid_config_uses_the_default(self, monkeypatch, raw):
+        from cron import scheduler as sched
+        from cron.scheduler_script import _get_script_timeout
+
+        monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"script_timeout_seconds": raw}})
+        assert _get_script_timeout() == sched._DEFAULT_SCRIPT_TIMEOUT
+
+    def test_unlimited_script_runs_past_the_default_deadline(self, cron_env, monkeypatch):
+        from cron import scheduler as sched
+        from cron.scheduler_script import _run_job_script
+
+        monkeypatch.setattr(sched, "_DEFAULT_SCRIPT_TIMEOUT", 1)
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", 1)
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "0")
+        script = cron_env / "scripts" / "slow.py"
+        script.write_text("import time; time.sleep(2.5); print('done')\n", encoding="utf-8")
+
+        ok, out = _run_job_script(str(script), workdir=str(cron_env))
+
+        assert (ok, out) == (True, "done")
+
+    def test_cancellation_still_stops_an_unlimited_script(self, cron_env, monkeypatch):
+        import threading
+        import time
+
+        from cron.scheduler_script import _run_job_script
+
+        monkeypatch.setenv("HERMES_CRON_SCRIPT_TIMEOUT", "0")
+        script = cron_env / "scripts" / "forever.py"
+        script.write_text("import time; time.sleep(60)\n", encoding="utf-8")
+        cancel = threading.Event()
+        timer = threading.Timer(1.0, cancel.set)
+        timer.start()
+        started = time.monotonic()
+        try:
+            ok, out = _run_job_script(str(script), workdir=str(cron_env), cancel_event=cancel)
+        finally:
+            timer.cancel()
+
+        assert not ok
+        assert "ownership was lost" in out
+        assert time.monotonic() - started < 30
