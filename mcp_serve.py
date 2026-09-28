@@ -439,7 +439,7 @@ class EventBridge:
                 if not _APPROVAL_ID_RE.fullmatch(file_id):
                     continue
                 try:
-                    record = json.loads(path.read_text(encoding="utf-8"))
+                    record = json.loads(path.read_text(encoding="utf-8-sig"))
                 except (OSError, ValueError):
                     continue
                 if not isinstance(record, dict):
