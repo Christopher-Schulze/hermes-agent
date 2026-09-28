@@ -382,6 +382,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         if (flight !== attachmentFlight.current) {
           discardStaleAttachment(r)
 
+          // Sidecar creates own a runtime; canonical attaches only own a subscription.
+          if (!gw.isCanonical && r && getUiState().sid !== r.session_id) {
+            void closeSession(r.session_id)
+          }
+
           return null
         }
 
