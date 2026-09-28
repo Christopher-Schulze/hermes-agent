@@ -328,6 +328,8 @@ class TestMem0ModeSwitch:
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
+        # Availability also needs the SDK when installs are off (#70979).
+        _stub_sdk_present(monkeypatch)
         (tmp_path / "mem0.json").write_text(
             json.dumps(
                 {
