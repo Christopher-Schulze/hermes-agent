@@ -2202,3 +2202,32 @@ class TestGitHubSourceFetchTreeBlobs:
         assert bundle.metadata["source_revision"] == "main"
         # The workers use the caller's pooled SSRF-safe client, not a bare one-shot request.
         assert seen_clients == [client] * len(paths)
+
+    def test_concurrent_blob_fetches_mint_one_app_token(self):
+        """Eight workers on a cold GitHub App cache mint one installation token, not eight."""
+        auth = GitHubAuth()
+        mints = []
+
+        def mint():
+            mints.append(1)
+            time.sleep(0.05)
+            return f"app-token-{len(mints)}"
+
+        blobs = [(f"skills/demo/{index}.md", f"{index}.md") for index in range(8)]
+        barrier = threading.Barrier(len(blobs), timeout=5)
+        source = GitHubSource(auth=auth)
+
+        def get(url, *, params=None, headers=None, **_kw):
+            assert headers is not None
+            barrier.wait()
+            return MagicMock(status_code=200, content=headers["Authorization"].encode())
+
+        files = {}
+        with patch.object(GitHubAuth, "_try_pat", return_value=None), \
+             patch.object(GitHubAuth, "_try_gh_cli", return_value=None), \
+             patch.object(GitHubAuth, "_try_github_app", side_effect=mint), \
+             patch.object(source, "_github_get", side_effect=get):
+            assert source._fetch_tree_blobs("owner/repo", blobs, "main", files) is True
+
+        assert len(mints) == 1
+        assert set(files.values()) == {b"token app-token-1"}

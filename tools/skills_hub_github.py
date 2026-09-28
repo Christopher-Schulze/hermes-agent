@@ -373,6 +373,9 @@ class GitHubSource(SkillSource):
             return True
         from tools.daemon_pool import DaemonThreadPoolExecutor
 
+        # Resolve the token once here: the workers share one GitHubAuth, and a cold or lapsed cache
+        # would otherwise have every worker mint its own GitHub App installation token at once.
+        self.auth.get_headers()
         pool = DaemonThreadPoolExecutor(max_workers=min(len(blobs), _BLOB_FETCH_WORKERS))
         try:
             contents = list(pool.map(lambda blob: self._fetch_file_bytes(repo, blob[0], ref=ref), blobs))
