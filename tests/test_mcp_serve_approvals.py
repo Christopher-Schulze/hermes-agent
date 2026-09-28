@@ -239,6 +239,7 @@ class TestMcpToolLayer:
         _place_pending(tmp_path, APPROVAL_ID)
         bridge = EventBridge()
         server = create_mcp_server(event_bridge=bridge)
+        assert server is not None
         context = Context(mcp_server=server)
 
         loop = asyncio.new_event_loop()
