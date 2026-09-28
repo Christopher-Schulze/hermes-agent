@@ -228,7 +228,7 @@ def _consume_external_decision(approval_id: str) -> Optional[str]:
     try:
         if not path.exists():
             return None
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError:
         return None
     try:
@@ -258,7 +258,7 @@ def _sweep_stale_handshake_files(now: float) -> None:
         for path in approvals_pending_dir().glob("*.json"):
             try:
                 expires_at = json.loads(
-                    path.read_text(encoding="utf-8")).get("expires_at")
+                    path.read_text(encoding="utf-8-sig")).get("expires_at")
                 if not isinstance(expires_at, (int, float)) \
                         or expires_at <= now:
                     path.unlink()
