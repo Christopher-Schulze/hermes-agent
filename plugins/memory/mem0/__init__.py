@@ -70,16 +70,12 @@ def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
 def _lazy_installs_enabled() -> bool:
     """Return True if the mem0 SDK can be installed on demand.
 
-    Wraps ``tools.lazy_deps._allow_lazy_installs`` so callers (is_available,
-    doctor) share one resolution path. Fails open (True) when the check
-    itself raises — refusing to install would lock users out of their own
-    backend, and the lazy-install gate already handles the sealed case.
+    The same policy pm applies when ``_create_backend()`` installs the SDK, so
+    is_available() and doctor agree with what first use will actually do.
     """
-    try:
-        from tools.lazy_deps import _allow_lazy_installs
-        return _allow_lazy_installs()
-    except Exception:
-        return True
+    from pm.install import lazy_installs_allowed
+
+    return lazy_installs_allowed()
 
 
 def _mem0_sdk_installed() -> bool:

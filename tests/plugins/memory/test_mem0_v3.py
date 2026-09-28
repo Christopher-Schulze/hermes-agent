@@ -33,11 +33,11 @@ def _stub_sdk_present(monkeypatch):
 
 
 def _stub_lazy_enabled(monkeypatch):
-    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+    monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: True)
 
 
 def _stub_lazy_disabled(monkeypatch):
-    monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: False)
+    monkeypatch.setattr("pm.install.lazy_installs_allowed", lambda: False)
 
 
 class FakeBackend:
@@ -469,20 +469,6 @@ class TestMem0ModeSwitch:
         _stub_lazy_enabled(monkeypatch)
         assert Mem0MemoryProvider().is_available() is True
 
-    def test_is_available_fails_open_if_lazy_check_raises(self, monkeypatch, tmp_path):
-        """If _allow_lazy_installs() itself raises (e.g. config unreadable),
-        is_available() must fail open (True) — refusing would lock users
-        out of their own backend. The lazy-install gate handles the sealed
-        case; a probe error should not be stricter than the gate."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("MEM0_API_KEY", "test-key")
-        monkeypatch.delenv("MEM0_HOST", raising=False)
-        _stub_sdk_absent(monkeypatch)
-
-        def _boom():
-            raise RuntimeError("config unreadable")
-        monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", _boom)
-        assert Mem0MemoryProvider().is_available() is True
 
 class TestMem0UserIdResolution:
     """user_id resolution: configured override > gateway-native id > placeholder.
