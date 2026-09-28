@@ -657,11 +657,6 @@ def test_create_board_param_isolates_workspace_default(monkeypatch, tmp_path):
         "HERMES_SESSION_ID",
     ):
         monkeypatch.delenv(var, raising=False)
-    try:
-        import hermes_constants
-        hermes_constants._cached_default_hermes_root = None  # type: ignore[attr-defined]
-    except Exception:
-        pass
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -669,10 +664,10 @@ def test_create_board_param_isolates_workspace_default(monkeypatch, tmp_path):
 
     kb._INITIALIZED_PATHS.clear()
 
+    (tmp_path / "alpha-proj").mkdir()
+    (tmp_path / "beta-proj").mkdir()
     alpha_dir = str(tmp_path / "alpha-proj")
     beta_dir = str(tmp_path / "beta-proj")
-    os.makedirs(alpha_dir)
-    os.makedirs(beta_dir)
     kb.create_board("alpha", default_workdir=alpha_dir)
     kb.create_board("beta", default_workdir=beta_dir)
 
