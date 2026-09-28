@@ -369,7 +369,7 @@ class GatewaySessionWatchersMixin:
             if entry.session_id in _scheduled_session_ids:
                 continue
             source = entry.origin
-            adapter = self._adapter_for_source(source)
+            adapter = self._delivery_adapter_for(source)
             if adapter is None:
                 logger.debug(
                     "Session health: wedged session %s has no adapter "
