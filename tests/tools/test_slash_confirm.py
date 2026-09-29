@@ -127,7 +127,7 @@ class TestResolveNoHandler:
     @pytest.mark.asyncio
     async def test_resolve_with_falsy_handler_returns_none(self):
         """When the stored handler is None/falsy, resolve returns None."""
-        slash_confirm.register("sess1", "cid1", "cmd", None)  # type: ignore[arg-type]
+        slash_confirm.register("sess1", "cid1", "cmd", None)  # type: ignore
         result = await slash_confirm.resolve("sess1", "cid1", "once")
         assert result is None
         # Entry should still be popped.
