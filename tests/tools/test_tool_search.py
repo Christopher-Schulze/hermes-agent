@@ -1324,7 +1324,7 @@ class TestTokenizeEdgeCases:
 
     def test_none_input(self):
         from tools.tool_search_catalog import _tokenize
-        assert _tokenize(None) == []  # type: ignore[arg-type]
+        assert _tokenize(None) == []  # type: ignore
 
     def test_only_non_alphanumeric(self):
         from tools.tool_search_catalog import _tokenize
