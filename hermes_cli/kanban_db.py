@@ -3013,7 +3013,7 @@ def _validate_durable_artifact(artifact: str) -> None:
     they are handed off by path alone, so each must exist, be a regular
     file, be readable, and be non-empty, or the task must not complete.
     """
-    path = Path(artifact)
+    path = Path(artifact).expanduser()
     if not path.exists():
         raise ArtifactPreservationError(
             f"declared durable artifact does not exist: {artifact}"
@@ -3084,12 +3084,20 @@ def _persist_scratch_completion_artifacts(
         try:
             resolved_src = src.resolve()
         except OSError:
-            _validate_durable_artifact(artifact)
+            try:
+                _validate_durable_artifact(artifact)
+            except ArtifactPreservationError:
+                _discard_copies()
+                raise
             persisted.append(artifact)
             continue
 
         if not resolved_src.is_relative_to(workspace_root):
-            _validate_durable_artifact(artifact)
+            try:
+                _validate_durable_artifact(artifact)
+            except ArtifactPreservationError:
+                _discard_copies()
+                raise
             persisted.append(artifact)
             continue
 
