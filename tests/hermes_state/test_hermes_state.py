@@ -3584,6 +3584,8 @@ class TestCompressionChainProjection:
         multi-hop compression, ignored branch/delegate children, and a fully
         tied sibling choice where the stable id tie-breaker is observable.
         """
+        from hermes_state_sessions import _projected_tip_source_sql
+
         db.create_session("matrix-plain", "")
 
         db.create_session("matrix-chain-root", "telegram")
@@ -3646,7 +3648,7 @@ class TestCompressionChainProjection:
         )
         projection_sql = (
             "SELECT "
-            f"{hermes_state._projected_tip_source_sql('s')} "
+            f"{_projected_tip_source_sql('s')} "
             "AS projected_source FROM sessions s WHERE s.id = ?"
         )
         for root_id in roots:
