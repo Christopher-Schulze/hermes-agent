@@ -538,7 +538,7 @@ def _validated_main_model_selection(
         custom_providers=[] if explicit_endpoint else get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
-    if is_bare_custom and base_url.strip():
+    if is_custom_endpoint and base_url.strip():
         # The submitted endpoint IS the route this pick asked for; the credential step may have
         # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
         # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
@@ -557,7 +557,6 @@ def _apply_main_model_assignment(
     result: "ModelSwitchResult",
     api_key: str = "",
     key_env: str = "",
-    base_url: str = "",
     provider: str = "",
 ) -> dict:
     """Apply a main-slot selection while preserving the credential binding and remote masks."""
@@ -568,7 +567,8 @@ def _apply_main_model_assignment(
     previous = model_cfg if isinstance(model_cfg, dict) else {}
     old_provider = str(previous.get("provider") or "").strip().lower()
     old_url = str(previous.get("base_url") or "").strip().rstrip("/")
-    endpoint_changed = bool(base_url.strip() and old_url and base_url.strip().rstrip("/") != old_url)
+    new_url = str(result.base_url or "").strip().rstrip("/")
+    endpoint_changed = bool(new_url and old_url and new_url != old_url)
     # Remote Config: the caller saves the effective block as a whole document, so a cleared
     # inherited key must be masked (null), and a locked route key refuses the whole assignment.
     if provider and provider != result.target_provider:
@@ -864,7 +864,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = _apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env, base_url, provider
+        cfg.get("model", {}), result, api_key, assignment_key_env, provider
     )
     if not assignment_key_env and not api_key and not (
         explicit_endpoint and _entry_points_elsewhere(provider_entry, base_url)
