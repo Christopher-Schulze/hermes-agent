@@ -16,10 +16,7 @@ from hermes_cli.config import (
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name
 from tools.wake_word import _PROVIDER_PREFERENCE
-from hermes_cli.model_assignment import (
-    apply_main_model_assignment,
-    persist_custom_endpoint_secret,
-)
+from hermes_cli.model_assignment import persist_custom_endpoint_secret
 
 if TYPE_CHECKING:
     from hermes_cli.model_switch import ModelSwitchResult
@@ -502,7 +499,7 @@ def _validated_main_model_selection(
         custom_providers=get_compatible_custom_providers(cfg))
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error_message or "model switch rejected")
-    if is_bare_custom and base_url.strip():
+    if is_custom_endpoint and base_url.strip():
         # The submitted endpoint IS the route this pick asked for; the credential step may have
         # re-resolved the bare target onto an env/config endpoint (CUSTOM_BASE_URL, a stale
         # model.base_url, the OPENROUTER_BASE_URL mirror). Restore the submitted endpoint AND the
@@ -521,23 +518,25 @@ def _apply_main_model_assignment(
     result: "ModelSwitchResult",
     api_key: str = "",
     key_env: str = "",
-    base_url: str = "",
     provider: str = "",
 ) -> dict:
-    """Apply a main-slot selection via ``apply_model_selection``, then the shared
-    persist/clear rules so custom secrets stay in ``key_env`` and a host change
-    drops the previous binding."""
+    """Apply the canonical route shape and its explicitly submitted credential."""
     from hermes_cli.model_switch import apply_model_selection
 
+    if provider:
+        result = replace(result, target_provider=provider)
     model_cfg = apply_model_selection(model_cfg, result)
-    return apply_main_model_assignment(
-        model_cfg,
-        provider or result.target_provider,
-        result.new_model,
-        base_url,
-        api_key,
-        key_env,
-    )
+    if key_env.strip():
+        model_cfg["key_env"] = key_env.strip()
+        model_cfg.pop("api_key_env", None)
+        model_cfg.pop("api_key", None)
+        model_cfg.pop("api", None)
+    elif api_key.strip():
+        model_cfg["api_key"] = api_key.strip()
+        model_cfg.pop("api", None)
+        model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
+    return model_cfg
 
 
 
@@ -725,7 +724,7 @@ def _apply_main_assignment_sync(cfg: dict, provider: str, model: str, base_url: 
     if assignment_key_env:
         api_key = ""
     model_cfg = _apply_main_model_assignment(
-        cfg.get("model", {}), result, api_key, assignment_key_env, base_url, provider
+        cfg.get("model", {}), result, api_key, assignment_key_env, provider
     )
     if not assignment_key_env and not api_key:
         _resolve_assignment_credentials(model_cfg, provider, provider_entry)

@@ -813,6 +813,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
         message="  ✓ Model catalog now refreshes every 20 minutes (model_catalog.ttl_minutes)",
         extra_guard=lambda raw: "ttl_minutes" not in raw)),
     (41, _migrate_to_41),
+    # 41 → 42: cron.model_drift_guard is gone. Unpinned jobs now run on their creation snapshot
+    # instead of failing closed when the global model changes, so the toggle has nothing to gate.
     (42, functools.partial(
         _rewrite_key, section="cron", key="model_drift_guard", new=None,
         match=lambda cur: cur is not None,
@@ -876,7 +878,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
 #: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
 #: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
 #: provenance the config stamp says nothing about.
-LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46, 50})
 
 
 def run_migrations(
