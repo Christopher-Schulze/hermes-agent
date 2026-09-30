@@ -804,7 +804,8 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         with kbc.connect() as conn:
             task = kb.get_task(conn, tid)
             assert task is not None
-            assert task.status == "ready"
+            assert task.status == "running"
+            assert task.current_run_id == run_id
             assert not any(event.kind == "completed" for event in kb.list_events(conn, tid))
         assert real_pdf.read_bytes() == b"%PDF-fake"
 
