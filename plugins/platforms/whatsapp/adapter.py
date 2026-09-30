@@ -515,12 +515,6 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not self._preflight():
             return False
         bridge_path = Path(self._bridge_script)
-        # Fast path: on a reconnect, a previously started bridge may still be
-        # alive. Probe /health before touching npm, pidfiles, or ports to avoid
-        # the full cold-start cost (#80094).
-        if is_reconnect:
-            if await self._reuse_running_bridge(bridge_path):
-                return True
         lock_acquired = False
         try:
             if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
@@ -529,10 +523,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
         try:
+            # Acquire session ownership before adopting the bridge, but avoid
+            # npm, pidfile and port cleanup when a reconnect can reuse it.
+            if is_reconnect and lock_acquired and await self._reuse_running_bridge(bridge_path):
+                return True
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
-            if await self._reuse_running_bridge(bridge_path):
+            if not is_reconnect and await self._reuse_running_bridge(bridge_path):
                 return True
             _kill_stale_bridge_by_pidfile(self._session_path)
             _kill_port_process(self._bridge_port)
