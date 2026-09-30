@@ -1,7 +1,7 @@
 """Tests for WhatsApp Baileys outbound media reply_to propagation (#80064).
 
-The Cloud adapter already forwards reply_to; this covers the Baileys bridge
-Python adapter and the Node.js bridge /send-media endpoint.
+The Cloud adapter already forwards reply_to; this covers the Baileys adapter's
+outbound HTTP contract with the bridge, without requiring a WhatsApp account.
 """
 
 from __future__ import annotations
@@ -9,12 +9,11 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
@@ -42,20 +41,10 @@ def _session_with():
 
 
 def _make_adapter():
-    adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
-    adapter.platform = Platform.WHATSAPP
-    adapter.config = PlatformConfig(enabled=True)
+    adapter = WhatsAppAdapter(PlatformConfig(enabled=True))
     adapter._running = True
     adapter._bridge_port = 3000
     adapter._check_managed_bridge_exit = AsyncMock(return_value=False)
-    adapter._message_handler = AsyncMock()
-    adapter._dm_policy = "open"
-    adapter._allow_from = set()
-    adapter._group_policy = "open"
-    adapter._group_allow_from = set()
-    adapter._mention_patterns = []
-    adapter._free_response_chats = set()
-    adapter._whatsapp_free_response_chats = lambda: set()
     return adapter
 
 
@@ -70,67 +59,34 @@ def tmp_media():
         os.unlink(f.name)
 
 
-def test_send_image_file_includes_reply_to(tmp_media):
+@pytest.mark.parametrize(
+    "method,media_type",
+    [("send_image", "image"), ("send_image_file", "image"),
+     ("send_video", "video"), ("send_voice", "audio"),
+     ("send_document", "document")],
+)
+@pytest.mark.parametrize("reply_to", ["msg-123", None, ""])
+def test_media_send_reply_contract(tmp_media, method, media_type, reply_to):
     adapter = _make_adapter()
     session, calls = _session_with()
     adapter._http_session = session
 
-    result = asyncio.run(
-        adapter.send_image_file("12345", tmp_media, reply_to="msg-123")
-    )
+    media_path = "https://example.com/media.png" if method == "send_image" else tmp_media
+    with patch("plugins.platforms.whatsapp.adapter.cache_image_from_url", new=AsyncMock(return_value=tmp_media)):
+        result = asyncio.run(getattr(adapter, method)("12345", media_path, caption="caption", reply_to=reply_to))
 
     assert result.success is True
+    assert result.message_id == "m1"
     assert len(calls) == 1
     url, payload = calls[0]
     assert url.endswith("/send-media")
-    assert payload["replyTo"] == "msg-123"
-
-
-def test_send_video_includes_reply_to(tmp_media):
-    adapter = _make_adapter()
-    session, calls = _session_with()
-    adapter._http_session = session
-
-    result = asyncio.run(
-        adapter.send_video("12345", tmp_media, reply_to="msg-456")
-    )
-
-    assert result.success is True
-    assert calls[0][1]["replyTo"] == "msg-456"
-
-
-def test_send_voice_includes_reply_to(tmp_media):
-    adapter = _make_adapter()
-    session, calls = _session_with()
-    adapter._http_session = session
-
-    result = asyncio.run(
-        adapter.send_voice("12345", tmp_media, reply_to="msg-789")
-    )
-
-    assert result.success is True
-    assert calls[0][1]["replyTo"] == "msg-789"
-
-
-def test_send_document_includes_reply_to(tmp_media):
-    adapter = _make_adapter()
-    session, calls = _session_with()
-    adapter._http_session = session
-
-    result = asyncio.run(
-        adapter.send_document("12345", tmp_media, reply_to="msg-abc")
-    )
-
-    assert result.success is True
-    assert calls[0][1]["replyTo"] == "msg-abc"
-
-
-def test_send_image_file_omits_reply_to_when_not_given(tmp_media):
-    adapter = _make_adapter()
-    session, calls = _session_with()
-    adapter._http_session = session
-
-    result = asyncio.run(adapter.send_image_file("12345", tmp_media))
-
-    assert result.success is True
-    assert "replyTo" not in calls[0][1]
+    assert payload["chatId"] == "12345@s.whatsapp.net"
+    assert payload["filePath"] == tmp_media
+    assert payload["mediaType"] == media_type
+    assert payload["caption"] == "caption"
+    if method == "send_document":
+        assert payload["fileName"] == os.path.basename(tmp_media)
+    if reply_to:
+        assert payload["replyTo"] == reply_to
+    else:
+        assert "replyTo" not in payload
