@@ -2802,14 +2802,8 @@ def _skill_slug_from_frontmatter(skill_md: Path) -> tuple[str | None, str | None
             break
     if not declared_name:
         return None, None
-    # Mirror agent.skill_commands.slugify_skill_name (keep underscores, #75620).
-    try:
-        from agent.skill_commands import slugify_skill_name
-        slug = slugify_skill_name(declared_name)
-    except Exception:
-        slug = declared_name.lower().replace(" ", "-")
-        slug = re.sub(r"[^a-z0-9_-]", "", slug)
-        slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    from agent.skill_commands import slugify_skill_name
+    slug = slugify_skill_name(declared_name)
     return (slug or None), declared_name
 
 
@@ -2848,6 +2842,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
         repo_root = Path(__file__).resolve().parent.parent
         optional_dir = get_optional_skills_dir(repo_root / "optional-skills")
         if optional_dir.exists():
+            match: tuple[str, str] | None = None
             for skill_md in optional_dir.rglob("SKILL.md"):
                 if is_excluded_skill_path(skill_md):
                     continue
@@ -2858,7 +2853,11 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                     # Install path: official/<category>/<name>
                     rel = skill_md.parent.relative_to(optional_dir)
                     install_path = f"official/{'/'.join(rel.parts)}"
-                    return t("gateway.skills.not_installed", name=command_name, install_name=install_path)
+                    candidate = (slug, install_path)
+                    if match is None or candidate < match:
+                        match = candidate
+            if match is not None:
+                return t("gateway.skills.not_installed", name=command_name, install_name=match[1])
     except Exception:
         pass
     return None
