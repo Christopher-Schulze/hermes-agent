@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
@@ -288,7 +290,8 @@ def test_cdp_command_uses_owned_endpoint_and_replaces_stale_daemon(
         session["_page_command_endpoint"] = f"ws://127.0.0.1/{previous}"
     calls = []
 
-    def collect(task_id, info, argv, operation, engine, timeout):
+    def collect(task_id, info, argv, operation, engine, timeout, stdin_payload=None):
+        assert stdin_payload is None
         calls.append((argv, operation))
         if operation == "close":
             return {"success": close_succeeds, "error": "close failed"}
@@ -309,6 +312,53 @@ def test_cdp_command_uses_owned_endpoint_and_replaces_stale_daemon(
         assert calls[-1][0][-len(args)-1:] == [command, *args]
     assert all(argv[:4] == ["agent-browser", "--cdp", "ws://127.0.0.1/owned", "--json"] for argv, _ in calls)
     supervisor.page_command_endpoint.assert_called_once_with(timeout=10)
+
+
+@pytest.mark.parametrize("command,args", [
+    ("eval", ["JSON.stringify(\n  ['%PATH%', 'ü']\n)"]),
+    ("fill", ["@e3", "line one\nline two %PATH% ü"]),
+])
+def test_owned_cdp_commands_preserve_windows_shim_arguments(monkeypatch, command, args):
+    """Page ownership must retain upstream's lossless Windows argument transport."""
+    from tools import browser_supervisor, browser_tool_session
+
+    supervisor = MagicMock()
+    supervisor.page_target_id.return_value = "OWNED"
+    endpoint = "ws://127.0.0.1/owned"
+    supervisor.page_command_endpoint.return_value = endpoint
+    monkeypatch.setattr(browser_supervisor.SUPERVISOR_REGISTRY, "get", lambda task_id: supervisor)
+    session = {"session_name": "shim-cdp", "cdp_url": "wss://browser.test/remote"}
+    shim = r"C:\Users\u\AppData\Roaming\npm\agent-browser.CMD"
+    monkeypatch.setattr(browser_tool_session, "_browser_command_preflight", lambda: {"browser_cmd": shim})
+    monkeypatch.setattr(browser_tool_session, "_get_session_info", lambda task_id: session)
+    monkeypatch.setattr(browser_tool_session._cdp, "_ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr(browser_tool_session._cloud, "_get_browser_engine", lambda: "auto")
+    captured = {}
+    payload = {"result": "ü"} if command == "eval" else {"filled": "@e3"}
+
+    def collect(task_id, info, argv, operation, engine, timeout, stdin_payload=None):
+        captured.update(argv=argv, stdin=stdin_payload)
+        assert operation == command
+        stdout = json.dumps(
+            [{"command": [command, *args], "success": True, "result": payload, "error": None}]
+            if command == "fill" else {"success": True, "data": payload}
+        )
+        return browser_tool_session._interpret_browser_command_output(operation, stdout, "", 0)
+
+    monkeypatch.setattr(browser_tool_session, "_spawn_and_collect", collect)
+    result = browser_tool_session._run_browser_command("task", command, args, timeout=5)
+
+    assert captured["argv"][:4] == [shim, "--cdp", endpoint, "--json"]
+    if command == "eval":
+        assert captured["argv"][-3:-1] == ["eval", "--base64"]
+        assert base64.b64decode(captured["argv"][-1]).decode("utf-8") == args[0]
+        assert captured["stdin"] is None
+        assert result == {"success": True, "data": payload}
+    else:
+        assert captured["argv"][-1] == "batch"
+        assert not any("\n" in part or "%" in part for part in captured["argv"])
+        assert json.loads(captured["stdin"]) == [[command, *args]]
+        assert result == {"success": True, "data": payload, "error": None}
 
 
 @pytest.mark.parametrize("final_url,blocked", [
