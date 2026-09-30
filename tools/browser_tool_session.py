@@ -476,8 +476,10 @@ def _run_cdp_page_command(
         if not closed.get("success"):
             return closed
     session_info["_page_command_endpoint"] = endpoint
-    return _spawn_and_collect(task_id, session_info, prefix + ["--json", command, *args],
-                              command, engine, timeout)
+    spawn_command, spawn_args, stdin_payload = _shim_safe_args(prefix[0], command, args)
+    return _unwrap_batch_result(
+        _spawn_and_collect(task_id, session_info, prefix + ["--json", spawn_command, *spawn_args],
+                           command, engine, timeout, stdin_payload), command)
 
 
 def _discard_timed_out_browser_session(task_id: str, session_info: dict[str, Any], task_socket_dir: str) -> None:
@@ -911,6 +913,7 @@ def _dispatch_browser_command(
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
+        _bind_session_page_target(task_id, session_info)
 
     # Every backend runs in this task's own daemon (``--session <name>``); Cloud/CDP adds
     # ``--cdp <ws_url>`` to attach it to the remote browser. Without --session every CDP task
@@ -934,12 +937,16 @@ def _dispatch_browser_command(
             backend_args += ["--engine", engine]
 
     argv = _agent_browser_argv(browser_cmd)
-    spawn_command, spawn_args, stdin_payload = _shim_safe_args(argv[0], command, args)
-    cmd_parts = argv + backend_args + ["--json", spawn_command] + spawn_args
-
     try:
-        result = _unwrap_batch_result(
-            _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout, stdin_payload), command)
+        if session_info.get("cdp_url") and command != "close":
+            with _cdp_binding_lock(str(session_info["session_name"])):
+                result = _run_cdp_page_command(
+                    task_id, session_info, argv + backend_args, command, args, engine, timeout)
+        else:
+            spawn_command, spawn_args, stdin_payload = _shim_safe_args(argv[0], command, args)
+            cmd_parts = argv + backend_args + ["--json", spawn_command] + spawn_args
+            result = _unwrap_batch_result(
+                _spawn_and_collect(task_id, session_info, cmd_parts, command, engine, timeout, stdin_payload), command)
     except Exception as e:
         _bt.logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
@@ -971,29 +978,8 @@ def _run_browser_command(
         except Exception as e:
             _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
             return {"success": False, "error": f"Failed to create browser session: {e!s}"}
-        def _dispatch_owned() -> "tuple[str, dict[str, Any]]":
-            if not session_info.get("cdp_url") or command == "close":
-                return _dispatch_browser_command(
-                    task_id, session_info, browser_cmd, command, args, timeout, _engine_override)
-            _cdp._ensure_cdp_supervisor(task_id)
-            _bind_session_page_target(task_id, session_info)
-            engine = _engine_override or _cloud._get_browser_engine()
-            prefix = _agent_browser_argv(browser_cmd) + ["--cdp", session_info["cdp_url"]]
-            try:
-                with _cdp_binding_lock(str(session_info["session_name"])):
-                    result = _run_cdp_page_command(
-                        task_id, session_info, prefix, command, args, engine, timeout,
-                    )
-            except Exception as exc:
-                result = {"success": False, "error": str(exc)}
-            return engine, result
-
-        engine, result = run_fenced_pair(session_info, _dispatch_owned)
-        if isinstance(result, list) and result:
-            final = result[-1]
-            result = {"success": bool(final.get("success")), "data": final.get("result") or {}}
-            if final.get("error"):
-                result["error"] = final["error"]
+        engine, result = run_fenced_pair(session_info, lambda: _dispatch_browser_command(
+            task_id, session_info, browser_cmd, command, args, timeout, _engine_override))
         if result.get("code") == "human_has_control":
             return result
         # #115184: a protocol-level failure (exit 101 on a stale session daemon, empty/non-JSON
