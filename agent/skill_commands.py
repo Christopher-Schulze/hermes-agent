@@ -33,7 +33,7 @@ _publish_lock = threading.Lock()
 # collapsed (#75620).
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
-# Mirror hermes_cli.commands._sanitize_telegram_name for collision policy.
+# Mirror hermes_cli.commands_platforms._sanitize_telegram_name for collision policy.
 _TG_SKILL_INVALID = re.compile(r"[^a-z0-9_]")
 _TG_SKILL_MULTI_UNDERSCORE = re.compile(r"_{2,}")
 
@@ -44,8 +44,10 @@ def telegram_bot_command_form(bare: str) -> str:
     Used for menu collision policy: two distinct skill keys that collapse to the
     same Telegram command name must resolve deterministically (#75620).
     """
-    name = bare.lower().lstrip("/").replace("-", "_")
-    name = _TG_SKILL_INVALID.sub("", name)
+    lowered = bare.lower().lstrip("/").replace("-", "_")
+    if any(ch.isalnum() for ch in _TG_SKILL_INVALID.findall(lowered)):
+        return ""
+    name = _TG_SKILL_INVALID.sub("", lowered)
     name = _TG_SKILL_MULTI_UNDERSCORE.sub("_", name)
     return name.strip("_")
 
@@ -587,14 +589,13 @@ def resolve_slash_key(command: str, table: Dict[str, Any]) -> Optional[str]:
     tg = telegram_bot_command_form(bare)
     if tg:
         # All registered keys that Telegram would present as the same bot command.
-        collisions = sorted(
-            key
-            for key in table
-            if telegram_bot_command_form(key.lstrip("/")) == tg
+        winner = min(
+            (key for key in table if telegram_bot_command_form(key.lstrip("/")) == tg),
+            default=None,
         )
-        if collisions:
+        if winner is not None:
             # Deterministic first-wins — matches sorted(skill_cmds) menu build order.
-            return collisions[0]
+            return winner
     # Empty Telegram form (letters outside [a-z0-9_]) or no telegram-form
     # match: allow the stored slug for CLI / Unicode keys (#12351).
     exact = f"/{bare}"
