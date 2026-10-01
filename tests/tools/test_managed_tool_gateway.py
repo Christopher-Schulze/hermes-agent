@@ -84,6 +84,17 @@ class TestAuthJsonPath:
 
 
 class TestReadNousProviderState:
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_guest_identity_respects_the_launch_gate(self, hermes_home, enabled):
+        state = {"auth_method": "anonymous", "access_token": "guest-token"}
+        _write_auth_file(hermes_home, {"nous": state})
+        with patch("hermes_cli.anon_auth.guest_enabled", return_value=enabled):
+            assert _read_nous_provider_state() == (state if enabled else None)
+
+    def test_returns_none_when_provider_lookup_raises(self, hermes_home):
+        with patch("hermes_cli.auth.get_provider_auth_state", side_effect=RuntimeError("unreadable store")):
+            assert _read_nous_provider_state() is None
+
     def test_returns_none_when_no_auth_file(self, hermes_home):
         assert _read_nous_provider_state() is None
 
@@ -241,7 +252,7 @@ def test_user_token_override_falls_back_to_env_when_scope_is_uninstalled(
         assert managed_tool_gateway._read_user_token_override() == "env-token"
 
 
-def test_user_token_override_falls_back_to_env_when_scope_import_fails(
+def test_user_token_override_propagates_scope_import_failure(
     clean_env, monkeypatch
 ):
     import builtins
@@ -255,7 +266,22 @@ def test_user_token_override_falls_back_to_env_when_scope_import_fails(
 
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "env-token")
     with patch("builtins.__import__", side_effect=failing_import):
-        assert managed_tool_gateway._read_user_token_override() == "env-token"
+        with pytest.raises(ImportError, match="module not found"):
+            managed_tool_gateway._read_user_token_override()
+
+
+def test_user_token_override_does_not_borrow_env_on_a_scoped_miss(clean_env, monkeypatch):
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "ambient-token")
+    with patch("agent.secret_scope.get_secret", return_value=None) as scoped_read:
+        assert managed_tool_gateway._read_user_token_override() is None
+    scoped_read.assert_called_once_with("TOOL_GATEWAY_USER_TOKEN")
+
+
+def test_user_token_override_propagates_scoped_read_failure(clean_env, monkeypatch):
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "ambient-token")
+    with patch("agent.secret_scope.get_secret", side_effect=RuntimeError("scope failed")):
+        with pytest.raises(RuntimeError, match="scope failed"):
+            managed_tool_gateway._read_user_token_override()
 
 
 class TestPeekNousAccessToken:
@@ -498,6 +524,44 @@ class TestReadNousAccessToken:
 # ---------------------------------------------------------------------------
 # get_tool_gateway_scheme
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "code, identity, mint_error, refreshed, expected",
+    [
+        ("anon_credential_dead", {"auth_method": "anonymous"}, None, " fresh-token ", "fresh-token"),
+        (None, {"auth_method": "anonymous"}, None, "fresh-token", "fresh-token"),
+        ("anon_account_locked", {"auth_method": "anonymous"}, None, "fresh-token", None),
+        ("anon_credential_dead", None, None, "fresh-token", None),
+        ("anon_credential_dead", None, RuntimeError("mint failed"), "fresh-token", None),
+        ("anon_credential_dead", {"auth_method": "anonymous"}, None, RuntimeError("exchange failed"), None),
+        ("anon_credential_dead", {"auth_method": "anonymous"}, None, "   ", None),
+    ],
+)
+def test_dead_guest_refresh_retires_the_exact_credential_and_bounds_replacement(
+    clean_env, code, identity, mint_error, refreshed, expected
+):
+    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, AnonCredentialDead
+
+    state = {"auth_method": "anonymous", "anon_token": "anon_dead", "access_token": "stale-token"}
+    failure = AnonCredentialDead("credential retired", code=code)
+    with (
+        patch.object(managed_tool_gateway, "_read_nous_provider_state", return_value=state),
+        patch.object(managed_tool_gateway, "_access_token_is_expiring", return_value=True),
+        patch("hermes_cli.auth.resolve_nous_access_token", side_effect=[failure, refreshed]) as refresh,
+        patch("hermes_cli.anon_auth.clear_dead_guest") as retire,
+        patch("hermes_cli.anon_auth.ensure_portal_identity", return_value=identity, side_effect=mint_error) as provision,
+    ):
+        assert read_nous_access_token() == expected
+
+    retire.assert_called_once_with(code or "anon_credential_dead", dead_token="anon_dead")
+    if code == ANON_ACCOUNT_LOCKED:
+        provision.assert_not_called()
+    else:
+        provision.assert_called_once_with(explicit=True)
+    exchanged = code != ANON_ACCOUNT_LOCKED and identity is not None and mint_error is None
+    assert refresh.call_count == (2 if exchanged else 1)
+    assert all(call.kwargs == {"refresh_skew_seconds": 120} for call in refresh.call_args_list)
 
 
 class TestGetToolGatewayScheme:
@@ -948,69 +1012,28 @@ def test_read_nous_provider_state_falls_back_to_global_root_for_share_auth_profi
     assert state["auth_method"] == "anonymous"
 
 # ---------------------------------------------------------------------------
-# Vendor endpoints, bearer headers, and managed media uploader
+# Bearer headers and URL validation on the current split module
 # ---------------------------------------------------------------------------
-
-
-def test_managed_vendor_endpoints_pin_the_deployed_gateway_url():
-    with patch.dict(
-        os.environ,
-        {"TOOL_GATEWAY_DOMAIN": "nousresearch.com", "TOOL_GATEWAY_SCHEME": "https"},
-        clear=False,
-    ):
-        os.environ.pop("TOOL_GATEWAY_URL", None)
-        endpoints = managed_tool_gateway.managed_vendor_endpoints("vendorx")
-    assert endpoints == {
-        "origin": "https://tool-gateway.nousresearch.com",
-        "base_url": "https://tool-gateway.nousresearch.com/api/vendorx",
-        "upload_path": "/api/uploads/vendorx",
-    }
-
-
-def test_managed_vendor_endpoints_do_not_consult_entitlement():
-    with patch.dict(os.environ, {"TOOL_GATEWAY_DOMAIN": "nousresearch.com"}, clear=False), \
-        patch.object(
-            managed_tool_gateway,
-            "managed_nous_tools_enabled",
-            side_effect=AssertionError("entitlement must not gate address resolution"),
-        ):
-        os.environ.pop("TOOL_GATEWAY_URL", None)
-        endpoints = managed_tool_gateway.managed_vendor_endpoints("vendorx")
-    assert endpoints is not None
-    assert endpoints["base_url"] == "https://tool-gateway.nousresearch.com/api/vendorx"
-
-
-def test_managed_vendor_endpoints_are_none_when_no_origin_resolves():
-    with patch.dict(os.environ, {"TOOL_GATEWAY_SCHEME": "ftp"}, clear=False):
-        os.environ.pop("TOOL_GATEWAY_URL", None)
-        assert managed_tool_gateway.managed_vendor_endpoints("vendorx") is None
-
-
-def test_managed_vendor_endpoints_are_none_when_builder_returns_empty_origin():
-    assert managed_tool_gateway.managed_vendor_endpoints(
-        "vendorx", gateway_builder=lambda _vendor: ""
-    ) is None
 
 
 @pytest.mark.parametrize("url", [None, "", "   ", 42])
 def test_managed_gateway_url_rejects_non_urls(url):
-    assert managed_tool_gateway.is_managed_nous_gateway_url(url) is False
+    assert managed_gateway_auth.is_managed_nous_gateway_url(url) is False
 
 
 def test_managed_gateway_url_rejects_invalid_builder_url():
-    assert managed_tool_gateway.is_managed_nous_gateway_url(
+    assert managed_gateway_auth.is_managed_nous_gateway_url(
         "https://tool-gateway.example.com/api/vendorx",
         gateway_builder=lambda _vendor: "https://[invalid",
     ) is False
 
 
 def test_managed_gateway_auth_headers_carry_the_bearer():
-    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-        headers = managed_tool_gateway.managed_gateway_auth_headers(
-            "https://tool-gateway.example.com/api/vendorx/generations",
-            gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
-            token_reader=lambda: "nous-token",
-        )
+    headers = managed_gateway_auth.managed_gateway_auth_headers(
+        "https://tool-gateway.example.com/api/vendorx/generations",
+        gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
+        token_reader=lambda: "nous-token",
+    )
     assert headers == {"Authorization": "Bearer nous-token"}
 
 
@@ -1018,186 +1041,28 @@ def test_managed_gateway_auth_headers_reflect_a_rotated_token():
     tokens = iter(["first-token", "second-token"])
     builder = lambda vendor: f"https://{vendor}-gateway.example.com"
     url = "https://tool-gateway.example.com/api/vendorx/generations"
-    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-        first = managed_tool_gateway.managed_gateway_auth_headers(
-            url, builder, lambda: next(tokens)
-        )
-        second = managed_tool_gateway.managed_gateway_auth_headers(
-            url, builder, lambda: next(tokens)
-        )
+    first = managed_gateway_auth.managed_gateway_auth_headers(
+        url, builder, lambda: next(tokens)
+    )
+    second = managed_gateway_auth.managed_gateway_auth_headers(
+        url, builder, lambda: next(tokens)
+    )
     assert first["Authorization"] == "Bearer first-token"
     assert second["Authorization"] == "Bearer second-token"
 
 
 def test_managed_gateway_auth_headers_refuse_a_url_off_the_gateway_origin():
-    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-        assert managed_tool_gateway.managed_gateway_auth_headers(
-            "https://attacker.example/api/vendorx/generations",
-            gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
-            token_reader=lambda: "nous-token",
-        ) == {}
+    assert managed_gateway_auth.managed_gateway_auth_headers(
+        "https://attacker.example/api/vendorx/generations",
+        gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
+        token_reader=lambda: "nous-token",
+    ) == {}
 
 
-def test_managed_gateway_auth_headers_empty_without_a_token():
-    with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-        assert managed_tool_gateway.managed_gateway_auth_headers(
-            "https://tool-gateway.example.com/api/vendorx/generations",
-            gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
-            token_reader=lambda: None,
-        ) == {}
-
-
-class TestManagedMediaUploader:
-    GATEWAY = "https://tool-gateway.example.com"
-    BASE_URL = f"{GATEWAY}/api/vendorx"
-    UPLOAD_PATH = "/api/uploads/vendorx"
-
-    def _uploader(self, **kwargs):
-        return managed_tool_gateway.build_managed_media_uploader(
-            kwargs.pop("server_url", self.BASE_URL),
-            kwargs.pop("upload_path", self.UPLOAD_PATH),
-            gateway_builder=lambda vendor: self.GATEWAY,
-            token_reader=kwargs.pop("token_reader", lambda: "nous-token"),
-        )
-
-    @staticmethod
-    def _response(status_code=200, payload=None):
-        class _R:
-            def __init__(self):
-                self.status_code = status_code
-
-            def json(self):
-                if payload is None:
-                    raise ValueError("no json")
-                return payload
-
-        return _R()
-
-    def _run(self, uploader, data=b"bytes", mime="image/png", presign=None, put=None):
-        import httpx
-        from tools import url_safety
-
-        calls = {"presign": [], "put": []}
-        presign = presign if presign is not None else self._response(
-            200, {"uploadUrl": "https://storage.example/put?sig=abc", "token": "tok-1"}
-        )
-        put = put if put is not None else self._response(200)
-
-        class _PresignClient:
-            def __init__(self, **_kw):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_exc):
-                return False
-
-            async def post(self, url, headers=None, json=None):
-                calls["presign"].append({"url": url, "headers": headers, "json": json})
-                return presign
-
-        class _PutClient:
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *_exc):
-                return False
-
-            async def put(self, url, content=None, headers=None):
-                calls["put"].append({"url": url, "content": content, "headers": headers})
-                return put
-
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True), \
-            patch.object(httpx, "AsyncClient", _PresignClient), \
-            patch.object(
-                url_safety,
-                "create_ssrf_safe_async_client",
-                lambda **_kw: _PutClient(),
-            ):
-            calls["result"] = asyncio.run(uploader(data, mime))
-        return calls
-
-    def test_presign_declares_the_exact_type_and_length_the_put_then_sends(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        data = b"\x89PNG\r\n\x1a\n" + b"payload" * 100
-        calls = self._run(uploader, data=data, mime="image/png")
-        assert calls["presign"][0]["url"] == f"{self.GATEWAY}{self.UPLOAD_PATH}"
-        assert calls["presign"][0]["json"] == {
-            "contentType": "image/png",
-            "contentLength": len(data),
-        }
-        assert calls["presign"][0]["headers"]["Authorization"] == "Bearer nous-token"
-        assert calls["put"][0]["url"] == "https://storage.example/put?sig=abc"
-        assert calls["put"][0]["content"] == data
-        assert calls["put"][0]["headers"] == {"Content-Type": "image/png"}
-        assert calls["result"] == "nous-upload:tok-1"
-
-    def test_the_bytes_go_to_storage_and_never_through_the_gateway(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        calls = self._run(uploader, data=b"v" * 4096, mime="video/mp4")
-        assert len(calls["presign"]) == 1 and len(calls["put"]) == 1
-        assert self.GATEWAY not in calls["put"][0]["url"]
-        assert calls["presign"][0]["json"]["contentType"] == "video/mp4"
-
-    def test_no_uploader_when_the_url_is_not_a_managed_gateway(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            assert self._uploader(server_url="https://attacker.example/api/vendorx") is None
-
-    @pytest.mark.parametrize("upload_path", [None, "", "api/uploads/vendorx", 42])
-    def test_no_uploader_without_a_rooted_upload_path(self, upload_path):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            assert self._uploader(upload_path=upload_path) is None
-
-    def test_a_missing_credential_fails_before_any_request(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True), \
-            patch.object(managed_tool_gateway, "managed_gateway_auth_headers", return_value={}):
-            with pytest.raises(RuntimeError, match="no Nous credential"):
-                asyncio.run(uploader(b"x", "image/png"))
-
-    def test_a_gateway_refusal_surfaces_its_own_message(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        refusal = self._response(
-            413, {"error": {"message": "That file is 82MB; the limit for video is 50MB."}}
-        )
-        with pytest.raises(RuntimeError, match="the limit for video is 50MB"):
-            self._run(uploader, presign=refusal)
-
-    def test_an_unreadable_refusal_still_reports_the_status(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        with pytest.raises(RuntimeError, match="HTTP 502"):
-            self._run(uploader, presign=self._response(502, None))
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {},
-            {"uploadUrl": "https://storage.example/put"},
-            {"token": "tok-1"},
-            {"uploadUrl": "", "token": "tok-1"},
-            {"uploadUrl": "https://storage.example/put", "token": ""},
-        ],
-    )
-    def test_a_malformed_presign_response_is_refused_rather_than_guessed(self, payload):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        with pytest.raises(RuntimeError, match="malformed"):
-            self._run(uploader, presign=self._response(200, payload))
-
-    def test_an_unreadable_success_response_is_refused_as_malformed(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        with pytest.raises(RuntimeError, match="malformed"):
-            self._run(uploader, presign=self._response(200, None))
-
-    def test_a_storage_rejection_is_not_reported_as_a_successful_upload(self):
-        with patch.object(managed_tool_gateway, "managed_nous_tools_enabled", return_value=True):
-            uploader = self._uploader()
-        with pytest.raises(RuntimeError, match="storage refused the upload"):
-            self._run(uploader, put=self._response(403))
+@pytest.mark.parametrize("token", [None, "", "   ", 42])
+def test_managed_gateway_auth_headers_empty_without_a_token(token):
+    assert managed_gateway_auth.managed_gateway_auth_headers(
+        "https://tool-gateway.example.com/api/vendorx/generations",
+        gateway_builder=lambda vendor: f"https://{vendor}-gateway.example.com",
+        token_reader=lambda: token,
+    ) == {}
