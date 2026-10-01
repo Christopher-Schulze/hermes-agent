@@ -33,8 +33,11 @@ def _snapshot(tmp_path, identifiers):
     return path
 
 
-def test_snapshot_import_reports_unrestored_skills_and_the_cli_exits_nonzero(monkeypatch, tmp_path):
-    present = {"official/a/alpha": True, "official/b/beta": False}
+@pytest.mark.parametrize("first_present", [False, True])
+def test_snapshot_import_reports_unrestored_skills_and_the_cli_exits_nonzero(
+    monkeypatch, tmp_path, first_present
+):
+    present = {"official/a/alpha": first_present, "official/b/beta": False}
     installed = []
 
     def fake_install(identifier, category="", force=False, console=None, **_kwargs):
@@ -43,23 +46,53 @@ def test_snapshot_import_reports_unrestored_skills_and_the_cli_exits_nonzero(mon
 
     monkeypatch.setattr(skills_hub, "do_install", fake_install)
     snapshot = _snapshot(tmp_path, list(present))
+    original_snapshot = snapshot.read_bytes()
     console, out = _console()
 
     assert do_snapshot_import(str(snapshot), console=console) is False
     assert installed == list(present), "every identified skill is still attempted"
     text = out.getvalue()
-    assert "1 of 2" in text and "official/b/beta" in text
+    assert f"{int(first_present)} of 2" in text
+    missing = ", ".join(identifier for identifier, restored in present.items() if not restored)
+    assert f"Not installed (cancelled, blocked or unavailable): {missing}" in text
     assert "Snapshot import complete" not in text
 
     with pytest.raises(SystemExit) as exit_info:
         _snapshot_cli(SimpleNamespace(snapshot_action="import", input=str(snapshot), force=False))
     assert exit_info.value.code == 1
 
+    console, out = _console()
+    assert skills_hub.handle_skills_slash(f"/skills snapshot import {snapshot}", console=console) is None
+    assert "Snapshot import failed" in out.getvalue()
+
+    present["official/a/alpha"] = True
     present["official/b/beta"] = True
     console, out = _console()
     assert do_snapshot_import(str(snapshot), console=console) is True
     assert "2 skill(s) restored" in out.getvalue()
     assert _snapshot_cli(SimpleNamespace(snapshot_action="import", input=str(snapshot), force=False)) is None
+    assert snapshot.read_bytes() == original_snapshot
+
+
+@pytest.mark.parametrize("contents, expected", [
+    (None, False),
+    ("{", False),
+    ('{"skills": [], "taps": []}', True),
+    ('\ufeff{"skills": [], "taps": []}', True),
+])
+def test_snapshot_import_input_failures_and_empty_snapshot_exit_status(tmp_path, contents, expected):
+    snapshot = tmp_path / "snapshot.json"
+    if contents is not None:
+        snapshot.write_text(contents, encoding="utf-8")
+    console, _out = _console()
+    assert do_snapshot_import(str(snapshot), console=console) is expected
+    args = SimpleNamespace(snapshot_action="import", input=str(snapshot), force=False)
+    if expected:
+        assert _snapshot_cli(args) is None
+    else:
+        with pytest.raises(SystemExit) as exit_info:
+            _snapshot_cli(args)
+        assert exit_info.value.code == 1
 
 
 def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(monkeypatch, tmp_path):
@@ -67,6 +100,7 @@ def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(mo
     import tools.skills_hub as hub
     import tools.skills_hub_install as hub_install
     import tools.skills_hub_search as hub_search
+    from hermes_cli.observability import shared_metrics_events
 
     class _Source:
         def inspect(self, identifier):
@@ -81,16 +115,29 @@ def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(mo
     quarantine = tmp_path / "skills" / ".hub" / "quarantine" / "gamma"
     quarantine.mkdir(parents=True)
     installs = []
+    events = []
+    installed_entry = None
+
+    class _Lock:
+        def get_installed(self, name):
+            return installed_entry
+
+    def record_install(*, kind, source, name, outcome):
+        events.append({"kind": kind, "source": source, "name": name, "outcome": outcome})
+
+    monkeypatch.setattr(shared_metrics_events, "record_extension_install", record_install)
 
     def _install_from_quarantine(q_path, name, category, bundle, result):
+        nonlocal installed_entry
         installs.append(name)
         target = tmp_path / "skills" / name
         target.mkdir(parents=True, exist_ok=True)
+        installed_entry = {"install_path": name}
         return target
 
     monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
     monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
-    monkeypatch.setattr(hub, "HubLockFile", lambda: type("Lock", (), {"get_installed": lambda self, n: None})())
+    monkeypatch.setattr(hub, "HubLockFile", _Lock)
     monkeypatch.setattr(hub_search, "create_source_router", lambda auth: [_Source()])
     monkeypatch.setattr(hub_install, "quarantine_bundle", lambda bundle: quarantine)
     monkeypatch.setattr(hub_install, "install_from_quarantine", _install_from_quarantine)
@@ -107,6 +154,11 @@ def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(mo
 
     assert do_install("owner/repo/gamma", console=console) is False
     assert installs == [], "a cancelled prompt installs nothing"
+    assert events == [], "cancelled installs emit no install metric"
     quarantine.mkdir(parents=True, exist_ok=True)
     assert do_install("owner/repo/gamma", console=console) is True
     assert installs == ["gamma"]
+    assert events == [{"kind": "skill", "source": "hub", "name": "gamma", "outcome": "success"}]
+    assert do_install("owner/repo/gamma", console=console) is True
+    assert installs == ["gamma"], "an existing skill is not reinstalled without force"
+    assert len(events) == 1, "an existing skill emits no duplicate install metric"
