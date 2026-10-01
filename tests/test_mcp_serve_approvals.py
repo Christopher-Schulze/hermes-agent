@@ -103,6 +103,15 @@ class TestPollApprovals:
         assert bridge.list_pending_approvals() == []
         assert bridge.poll_events(after_cursor=0)["events"] == []
 
+    @pytest.mark.parametrize("expires_at", [None, "invalid", [], {}, float("nan")])
+    def test_invalid_expiry_is_not_exposed_as_a_live_approval(self, tmp_path, expires_at):
+        from mcp_serve import EventBridge
+        _place_pending(tmp_path, APPROVAL_ID, expires_at=expires_at)
+
+        bridge = EventBridge()
+        assert bridge.list_pending_approvals() == []
+        assert bridge.poll_events(after_cursor=0)["events"] == []
+
     def test_multiple_approvals_sorted_by_created_at(self, tmp_path):
         from mcp_serve import EventBridge
         now = time.time()

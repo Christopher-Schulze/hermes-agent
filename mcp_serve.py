@@ -452,7 +452,8 @@ class EventBridge:
                     record = dict(record)
                     record["id"] = approval_id
                 expires_at = record.get("expires_at")
-                if isinstance(expires_at, (int, float)) and expires_at <= now:
+                if not (isinstance(expires_at, (int, float))
+                        and expires_at > now):
                     # Stale leftover from a dead gateway — ignore it, but do not
                     # delete it here: cleanup is gateway-owned (the next
                     # _publish_pending_approval sweeps expired records).

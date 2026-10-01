@@ -256,8 +256,8 @@ def _sweep_stale_handshake_files(now: float) -> None:
             try:
                 expires_at = json.loads(
                     path.read_text(encoding="utf-8-sig")).get("expires_at")
-                if not isinstance(expires_at, (int, float)) \
-                        or expires_at <= now:
+                if not (isinstance(expires_at, (int, float))
+                        and expires_at > now):
                     path.unlink()
                 else:
                     live_pending.add(path.name)
