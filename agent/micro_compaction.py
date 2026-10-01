@@ -92,6 +92,8 @@ class MicroCompactionMixin:
 
     def _build_micro_summary_prompt(self, existing_summary: str, exchange_text: str) -> List[Dict[str, str]]:
         """Build the prompt messages for a single-exchange micro-summary."""
+        existing_summary = _cc()._redact_compaction_text(existing_summary)
+        exchange_text = _cc()._redact_compaction_text(exchange_text)
         summary_block = existing_summary if existing_summary.strip() else "(No previous summary yet.)"
         user_prompt = (
             "You are a summarization agent creating a compact record of an "
@@ -245,25 +247,26 @@ class MicroCompactionMixin:
             return messages
         # Pre-pass state, restored when the commit finds a compaction landed during the summary call.
         _pre_cursor, _pre_summary = self._micro_compact_cursor, self._micro_compact_rolling_summary
+        _pre_flush_invalidated = self._flush_scan_cursor_invalidated
 
         # Defrag rewrites summary text/marker in place (no splice, no cursor move) instead of
         # absorbing this turn.
         if self._needs_defrag():
-            _marker = next((e for e in reversed(messages) if _is_micro_marker(e)), None)
-            _pre_marker = dict(_marker) if _marker is not None else None
-            defragged = self._defrag_rolling_summary(messages)
-            if defragged and not self._sync_micro_compact_to_db(
-                messages, held=_held, start_watermark=_start_watermark,
-            ):
-                # Stale generation: undo the in-place rewrite so the finalizer never persists it.
-                self._micro_compact_rolling_summary = _pre_summary
-                if _marker is not None:
-                    _marker.clear()
-                    _marker.update(_pre_marker)
-                _telemetry("stale_generation", messages, tokens_after=_tokens_before)
-                return messages
+            candidate = [dict(e) if _is_micro_marker(e) else e for e in messages]
+            defragged = self._defrag_rolling_summary(candidate)
             if defragged:
+                persisted = self._sync_micro_compact_to_db(
+                    candidate, held=_held, start_watermark=_start_watermark,
+                )
+                if not persisted:
+                    self._micro_compact_rolling_summary = _pre_summary
+                    self._flush_scan_cursor_invalidated = _pre_flush_invalidated
+                    outcome = "stale_generation" if persisted is False else "persist_failed"
+                    _telemetry(outcome, messages, tokens_after=_tokens_before)
+                    return messages
                 self._reset_micro_failure_tracking()
+                # Publish the copied marker only after the commit succeeds.
+                messages[:] = candidate
             outcome = "defrag" if defragged else "defrag_failed"
             _telemetry(outcome, messages, tokens_after=estimate_messages_tokens_rough(messages))
             return messages
@@ -280,29 +283,25 @@ class MicroCompactionMixin:
             return messages
 
         updated_summary = _cc()._redact_compaction_text(updated_summary)
-        prev_summary = self._micro_compact_rolling_summary
-        prev_cursor = self._micro_compact_cursor
-        prev_failures = self._micro_compact_consecutive_failures
-        prev_fail_cursor = self._micro_compact_last_failure_cursor
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
-        self._reset_micro_failure_tracking()
 
         result = self._splice_micro_compact_result(messages, exchange_start, exchange_end, supersede=_cumulative)
-        if not self._sync_micro_compact_to_db(result, held=_held, start_watermark=_start_watermark):
-            self._micro_compact_rolling_summary = prev_summary
-            self._micro_compact_cursor = prev_cursor
-            # Count persist failures toward the skip threshold (#84723): a disk
-            # that keeps rejecting the splice retried forever when the counter
-            # was reset. Restore the pre-reset failure state and record this
-            # attempt so _record_micro_failure can skip the stuck exchange.
-            self._micro_compact_consecutive_failures = prev_failures
-            self._micro_compact_last_failure_cursor = prev_fail_cursor
-            self._record_micro_failure(exchange_start, exchange_end)
+        persisted = self._sync_micro_compact_to_db(result, held=_held, start_watermark=_start_watermark)
+        if not persisted:
+            self._micro_compact_rolling_summary = _pre_summary
+            self._micro_compact_cursor = _pre_cursor
+            self._flush_scan_cursor_invalidated = _pre_flush_invalidated
+            # Only a failed write is a retry strike; a stale generation belongs
+            # to the winning writer and must remain a true no-op.
+            if persisted is None:
+                self._record_micro_failure(exchange_start, exchange_end)
             _telemetry(
-                "persist_failed", messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens,
+                "stale_generation" if persisted is False else "persist_failed",
+                messages, tokens_after=_tokens_before, exchange_tokens=_exchange_tokens,
             )
             return messages
+        self._reset_micro_failure_tracking()
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
         _telemetry(
             "absorbed", result, tokens_after=estimate_messages_tokens_rough(result), exchange_tokens=_exchange_tokens,
@@ -417,11 +416,12 @@ class MicroCompactionMixin:
     def _sync_micro_compact_to_db(
         self, compacted_messages: List[Dict[str, Any]], *, held: Optional[List[Dict[str, Any]]] = None,
         start_watermark: Optional[int] = None,
-    ) -> bool:
+    ) -> Optional[bool]:
         """Persist the micro-compacted set to the session DB atomically and stamp rows persisted.
         Without this the old exchange rows stay ``active=1`` and a resume double-loads both the
-        summary and the originals. Returns False when *held* is stale or persistence fails;
-        the caller must then discard the pass. No DB binding permits in-memory-only operation."""
+        summary and the originals. True means committed (or no DB binding), False means stale
+        generation, and None means write failure. Both non-success outcomes discard the pass;
+        only write failure counts toward the existing retry guard."""
         session_db, session_id = getattr(self, "_session_db", None), getattr(self, "_session_id", "")
         if not session_db or not session_id:
             return True
@@ -459,7 +459,7 @@ class MicroCompactionMixin:
                 "Micro-compaction DB sync failed — keeping the pre-splice "
                 "transcript rather than publishing an unsynced list"
             )
-            return False
+            return None
 
     def _splice_micro_compact_result(
         self, messages: List[Dict[str, Any]], splice_start: int, splice_end: int, supersede: bool = True,
@@ -512,7 +512,11 @@ class MicroCompactionMixin:
         merged: List[Dict[str, Any]] = []
         for msg in result:
             prev = merged[-1] if merged else None
-            if _plain_user(msg) and _plain_user(prev):
+            if isinstance(prev, dict) and _plain_user(msg) and _plain_user(prev):
+                # This is still an uncommitted candidate. Preserve the held row
+                # for failure rollback and the DB's generation/coverage checks.
+                prev = dict(prev)
+                merged[-1] = prev
                 prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
                 drop_stale_api_content(prev)  # merged content invalidates the api_content sidecar
                 # The originals stay in display history as compacted rows; showing the join too

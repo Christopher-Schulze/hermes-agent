@@ -732,28 +732,79 @@ class TestMicroCompaction:
             "splice must not strip _db_persisted from surviving messages"
         )
 
-    def test_failed_db_sync_keeps_pre_splice_transcript(self):
-        """A raised archive_and_compact must not publish the spliced list (#84723)."""
-        cc = _compressor()
-        cc._session_id = "sess-84723"
+    @pytest.mark.parametrize("phase", ["initial", "second", "third", "defrag"])
+    @pytest.mark.parametrize("failure", ["write", "stale"])
+    def test_failed_db_sync_keeps_pre_splice_transcript(self, tmp_path, monkeypatch, caplog, phase, failure):
+        """Rejected candidates never leak through the real finalizer or durable resume."""
+        import logging
+        from copy import deepcopy
+        from types import SimpleNamespace
 
-        class _FailingDB:
-            def archive_and_compact(self, *_a, **_k):
-                raise RuntimeError("disk full")
+        from agent.context_compressor import _DB_PERSISTED_MARKER
+        from agent.turn_finalizer import _micro_compact_after_turn
 
-        cc._session_db = _FailingDB()
-        messages = _conversation(exchanges=8)
-        original = list(messages)
-        prev_summary = cc._micro_compact_rolling_summary
-        result = cc._micro_compact(messages)
-        assert result is messages
-        assert [m.get("content") for m in result] == [m.get("content") for m in original]
-        assert not _summary_markers(result)
-        # Resolve may scan-advance the cursor; absorb must not keep the
-        # new rolling summary when persist failed.
-        assert cc._micro_compact_rolling_summary == prev_summary
-        # Persist failure is a strike: do not reset the skip-after-N guard.
-        assert cc._micro_compact_consecutive_failures == 1
+        db, cc, messages = _held_session(tmp_path, "micro")
+        try:
+            for _ in range({"initial": 0, "second": 1, "third": 2, "defrag": 1}[phase]):
+                messages = cc._micro_compact(messages)
+                assert _summary_markers(messages)
+            if phase == "defrag":
+                cc._micro_compact_rolling_summary = "x" * 40_000
+            exchange = cc._next_exchange(messages)
+            assert exchange is not None
+            cc._micro_compact_consecutive_failures = 1
+            cc._micro_compact_last_failure_cursor = exchange[0]
+            cc._flush_scan_cursor_invalidated = False
+            original = deepcopy(messages)
+            summary = cc._micro_compact_rolling_summary
+            cursor = cc._micro_compact_cursor
+            durable = db.get_messages_as_conversation("s")
+
+            if failure == "write":
+                # Fail INSERT after archive UPDATE has begun: SQLite must roll
+                # back the real transaction, not just return a mocked status.
+                db._execute_write(lambda conn: conn.execute(
+                    "CREATE TRIGGER reject_micro BEFORE INSERT ON messages "
+                    "BEGIN SELECT RAISE(ABORT, 'injected micro write failure'); END"
+                ))
+            else:
+                winner = [{"role": "user", "content": "start"},
+                          {"role": "assistant", "content": "winning summary"}]
+
+                def summary_after_winner(_text):
+                    db.archive_and_compact("s", winner)
+                    return "rejected summary"
+
+                monkeypatch.setattr(cc, "_micro_summarize_one", summary_after_winner)
+
+            prefix = object()
+            agent = SimpleNamespace(context_compressor=cc, _persist_disabled=False,
+                                    compression_checkpoint_required=False, _db_flush_scan_prefix=prefix,
+                                    session_id="s")
+            with caplog.at_level(logging.INFO):
+                _micro_compact_after_turn(agent, messages, "done", logging.getLogger(__name__), "micro-test")
+            assert messages == original  # includes mutable identity metadata and persistence stamps
+            assert cc._micro_compact_rolling_summary == summary
+            assert cc._micro_compact_cursor == cursor
+            assert cc._flush_scan_cursor_invalidated is False
+            assert agent._db_flush_scan_prefix is prefix
+            expected_failures = 2 if failure == "write" and phase != "defrag" else 1
+            assert cc._micro_compact_consecutive_failures == expected_failures
+            if failure == "write":
+                assert any("Micro-compaction DB sync failed" in record.getMessage() for record in caplog.records)
+                db._execute_write(lambda conn: conn.execute("DROP TRIGGER reject_micro"))
+                assert db.get_messages_as_conversation("s") == durable
+            # The subsequent append-only persistence must find no rejected row.
+            for msg in messages:
+                if not msg.get(_DB_PERSISTED_MARKER):
+                    db.append_message("s", msg["role"], msg.get("content"))
+            live = db.get_messages_as_conversation("s")
+            if failure == "write":
+                assert live == durable
+            else:
+                assert [m["content"] for m in live] == [m["content"] for m in winner]
+        finally:
+            db.close()
 
     def test_repeated_persist_failures_skip_the_stuck_exchange(self):
         """A disk that keeps rejecting the splice must not retry forever."""
@@ -787,25 +838,26 @@ class TestMicroCompaction:
         assert secret not in cc._micro_compact_rolling_summary
         assert secret not in markers[0]["content"]
 
-    def test_rehydrated_secret_is_redacted_before_summarizer_prompt(self):
-        """A legacy marker secret must not re-enter the aux prompt (#84723)."""
+    @pytest.mark.parametrize("phase", ["rehydrate", "absorb", "defrag"])
+    def test_rehydrated_secret_is_redacted_before_summarizer_prompt(self, phase):
+        """Summary/exchange input and generated output stay redacted at the LLM boundary."""
         secret = "sk-proj-" + ("a" * 40)
         cc = _compressor()
         cc._micro_compact_rolling_summary = ""
         cc._micro_compact_cursor = 0
-        del cc._micro_summarize_one
         messages = _conversation(exchanges=8)
-        messages.insert(
-            1,
-            {
-                "role": "assistant",
-                "content": f"Old summary leaked {secret}",
-                COMPRESSED_SUMMARY_METADATA_KEY: True,
-            },
-        )
+        if phase == "rehydrate":
+            messages.insert(1, {"role": "assistant", "content": f"Old summary leaked {secret}",
+                                COMPRESSED_SUMMARY_METADATA_KEY: True})
+        elif phase == "absorb":
+            messages[2]["content"] = f"exchange leaked {secret}"
+        else:
+            messages = cc._micro_compact(messages)
+            cc._micro_compact_rolling_summary = f"old summary {secret} " + "x" * 40_000
+        del cc._micro_summarize_one
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "clean updated summary"
+        mock_response.choices[0].message.content = f"updated summary leaked {secret}"
 
         with patch(
             "agent.auxiliary_client.call_llm",
@@ -818,7 +870,8 @@ class TestMicroCompaction:
         assert secret not in prompt
         assert secret not in cc._micro_compact_rolling_summary
         assert secret not in str(result)
-    def test_defragged_summary_is_redacted_before_publish(self):
+
+    def test_defragged_summary_is_redacted_before_publish(self, monkeypatch):
         """Defrag-generated summary is redacted before rolling summary and marker (#84723).
 
         The absorb and rehydration paths already redact; the defrag sibling
@@ -832,7 +885,7 @@ class TestMicroCompaction:
         assert _summary_markers(messages)
         # Force defrag on the next pass and make the summarizer leak a secret.
         cc._micro_compact_rolling_summary = "x" * 40_000
-        cc._micro_summarize_one = lambda _text: f"Defrag leaked {secret}"
+        monkeypatch.setattr(cc, "_micro_summarize_one", lambda _text: f"Defrag leaked {secret}")
         result = cc._micro_compact(list(messages))
         markers = _summary_markers(result)
         assert markers
