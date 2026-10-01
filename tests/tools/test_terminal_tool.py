@@ -3,6 +3,8 @@
 import json
 import subprocess
 
+import pytest
+
 import tools.terminal_tool as terminal_tool
 import tools.terminal_tool_sudo as terminal_tool_sudo
 
@@ -151,35 +153,55 @@ class _FakeTimeoutEnv:
     def __init__(self, exc):
         self.exc = exc
         self.cwd = None
+        self.calls = 0
 
     def execute(self, *args, **kwargs):
+        self.calls += 1
         raise self.exc
 
 
-def _run_terminal_with_timeout_exc(monkeypatch, exc):
-    terminal_tool._active_environments.clear()
+def _run_terminal_with_timeout_exc(monkeypatch, tmp_path, exc):
+    fake_env = _FakeTimeoutEnv(exc)
     monkeypatch.setenv("TERMINAL_ENV", "local")
-    monkeypatch.setenv("TERMINAL_CWD", "/tmp")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     monkeypatch.setattr(terminal_tool.time, "sleep", lambda _x: None)
     monkeypatch.setattr(
         terminal_tool,
         "_acquire_env",
-        lambda plan, task_id: _FakeTimeoutEnv(exc),
+        lambda plan, task_id: fake_env,
     )
-    return json.loads(terminal_tool.terminal_tool("sleep 10", force=True, timeout=5))
+    raw = terminal_tool.registry.dispatch("terminal", {"command": "sleep 10", "timeout": 5})
+    assert isinstance(raw, str)
+    return json.loads(raw), fake_env.calls
 
 
-def test_terminal_tool_timeout_error_returns_124_without_retry(monkeypatch):
-    result = _run_terminal_with_timeout_exc(monkeypatch, TimeoutError())
+def test_terminal_tool_timeout_error_returns_124_without_retry(monkeypatch, tmp_path):
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, TimeoutError())
     assert result["exit_code"] == 124
     assert "timed out after 5 seconds" in result["error"].lower()
+    assert calls == 1
 
 
-def test_terminal_tool_subprocess_timeout_expired_returns_124_without_retry(monkeypatch):
+def test_terminal_tool_subprocess_timeout_expired_returns_124_without_retry(monkeypatch, tmp_path):
     exc = subprocess.TimeoutExpired("sleep 10", timeout=5)
-    result = _run_terminal_with_timeout_exc(monkeypatch, exc)
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, exc)
     assert result["exit_code"] == 124
     assert "timed out after 5 seconds" in result["error"].lower()
+    assert calls == 1
+
+
+@pytest.mark.parametrize("message", ["connection timeout", "request timed out", "timeout: 5 seconds"])
+def test_terminal_tool_backend_timeout_returns_124_without_retry(monkeypatch, tmp_path, message):
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, RuntimeError(message))
+    assert result["exit_code"] == 124
+    assert calls == 1
+
+
+def test_terminal_tool_non_timeout_error_exhausts_existing_retries(monkeypatch, tmp_path):
+    result, calls = _run_terminal_with_timeout_exc(monkeypatch, tmp_path, ValueError("timeout must be positive"))
+    assert result["exit_code"] == -1
+    assert "ValueError: timeout must be positive" in result["error"]
+    assert calls == 4
 
 
 class _FakeTransientEnv:
@@ -194,11 +216,10 @@ class _FakeTransientEnv:
         return {"output": "ok", "returncode": 0}
 
 
-def test_terminal_tool_retries_non_timeout_transient_error(monkeypatch):
-    terminal_tool._active_environments.clear()
+def test_terminal_tool_retries_non_timeout_transient_error(monkeypatch, tmp_path):
     fake_env = _FakeTransientEnv()
     monkeypatch.setenv("TERMINAL_ENV", "local")
-    monkeypatch.setenv("TERMINAL_CWD", "/tmp")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
     monkeypatch.setattr(terminal_tool.time, "sleep", lambda _x: None)
     monkeypatch.setattr(
         terminal_tool,
@@ -206,9 +227,9 @@ def test_terminal_tool_retries_non_timeout_transient_error(monkeypatch):
         lambda plan, task_id: fake_env,
     )
 
-    result = json.loads(
-        terminal_tool.terminal_tool("printf ok", force=True, timeout=5)
-    )
+    raw = terminal_tool.registry.dispatch("terminal", {"command": "printf ok", "timeout": 5})
+    assert isinstance(raw, str)
+    result = json.loads(raw)
 
     assert result["output"] == "ok"
     assert result["exit_code"] == 0
