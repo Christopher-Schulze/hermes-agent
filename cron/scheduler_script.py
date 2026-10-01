@@ -67,6 +67,8 @@ def _timeout_from_env_or_config(
 def _script_timeout_seconds(raw) -> int:
     """Whole seconds > 0, or 0 for an exact numeric zero (no deadline); raises on anything else,
     so a negative, fractional-below-one or unparsable value falls back instead of disabling."""
+    if isinstance(raw, bool):
+        raise ValueError("script timeout must be a number, not a boolean")
     value = float(raw)
     if value == 0:
         return 0
