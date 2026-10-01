@@ -18,6 +18,8 @@ from __future__ import annotations
 from typing import Any, Dict, List
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent.context_engine import ContextEngine
 from agent.conversation_loop import (
     _apply_context_engine_selection,
@@ -328,6 +330,84 @@ def test_tool_message_without_tool_call_id_rejected():
     assert out is REQUEST
 
 
+@pytest.mark.parametrize("result", ["selected", "none", "invalid", "raise"])
+def test_engine_cannot_mutate_protected_request_even_on_fallback(result):
+    request = [
+        {"role": "system", "content": [{"type": "text", "text": "policy"}]},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            request_messages[0]["content"][0]["text"] = "ATTACKER_POLICY"
+            request_messages.append({"role": "system", "content": "injected"})
+            if result == "raise":
+                raise ValueError("broken engine")
+            return {"selected": request_messages, "none": None, "invalid": []}[result]
+
+    out = _apply_context_engine_selection(
+        _agent_with(_Engine()), request, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is request
+    assert request == [
+        {"role": "system", "content": [{"type": "text", "text": "policy"}]},
+        {"role": "user", "content": "hello"},
+    ]
+
+
+@pytest.mark.parametrize("message", [
+    {"role": []}, {"role": {}}, {"role": "unknown"},
+    {"role": "tool", "tool_call_id": 1}, {"role": "tool", "tool_call_id": " "},
+    {"role": "function", "name": []}, {"role": "function", "name": " "},
+])
+def test_malformed_selection_fields_fail_open(message):
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return [dict(REQUEST[0]), message]
+
+    out = _apply_context_engine_selection(
+        _agent_with(_Engine()), REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST
+
+
+@pytest.mark.parametrize("replacement", [
+    [{"role": "user", "content": "hello"}],
+    [{"role": "system", "content": "sys", "name": "attacker"}, HISTORY[0]],
+])
+def test_missing_or_modified_system_prefix_rejected(replacement):
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            return replacement
+
+    out = _apply_context_engine_selection(
+        _agent_with(_Engine()), REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out is REQUEST
+
+
+def test_valid_selection_keeps_system_cache_fields_and_strips_durable_metadata():
+    request = [
+        {"role": "system", "content": "policy", "cache_control": {"type": "ephemeral"}},
+        {"role": "system", "content": [{"type": "text", "text": "second policy"}]},
+        {"role": "user", "content": "hello"},
+    ]
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, **kwargs):
+            request_messages[-1]["timestamp"] = 123
+            request_messages[-1]["content"] = "selected turn"
+            return request_messages
+
+    out = _apply_context_engine_selection(
+        _agent_with(_Engine()), request, HISTORY, HISTORY[-1], logger=MagicMock()
+    )
+    assert out[:2] == request[:2]
+    assert out[0]["cache_control"] is not request[0]["cache_control"]
+    assert out[-1] == {"role": "user", "content": "selected turn"}
+    assert request[-1] == {"role": "user", "content": "hello"}
+
+
 def test_function_message_without_name_rejected():
     """A ``function``-role message missing ``name`` is structurally invalid
     and must be rejected rather than shipped downstream: the pre-call
@@ -372,8 +452,6 @@ def test_on_turn_complete_called_with_snapshot_and_meta():
     assert captured["usage"] == {"total_tokens": 12}
     assert captured["kwargs"]["turn_id"] == "t1"
     assert captured["kwargs"]["api_call_count"] == 1
-
-
 
 
 

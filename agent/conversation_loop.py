@@ -1283,13 +1283,12 @@ def _context_engine_selection_is_safe(
     """
     if len(selected) < len(system_prefix):
         return False
-    # The leading system messages must match the original prefix verbatim
-    # (role + content), so an engine cannot swap in its own system policy.
+    # Preserve the entire system message, including provider/cache fields.
     for idx, orig in enumerate(system_prefix):
         sel = selected[idx]
         if not isinstance(sel, dict):
             return False
-        if sel.get("role") != "system" or sel.get("content") != orig.get("content"):
+        if without_persistence_fields(sel) != without_persistence_fields(orig):
             return False
     # Every message after the preserved prefix must be a conversation/tool
     # message with a valid role; a stray ``system`` message is an injection.
@@ -1297,14 +1296,15 @@ def _context_engine_selection_is_safe(
         if not isinstance(msg, dict):
             return False
         role = msg.get("role")
-        if role not in _VALID_CONTEXT_SELECTION_ROLES:
+        if not isinstance(role, str) or role not in _VALID_CONTEXT_SELECTION_ROLES:
             return False
         if role == "system":
             return False
-        if role == "tool" and not msg.get("tool_call_id"):
-            return False
-        if role == "function" and not msg.get("name"):
-            return False
+        required_field = "tool_call_id" if role == "tool" else "name" if role == "function" else None
+        if required_field is not None:
+            value = msg.get(required_field)
+            if not isinstance(value, str) or not value.strip():
+                return False
     return True
 
 
@@ -1338,7 +1338,7 @@ def _apply_context_engine_selection(
     # containers into persisted history; only the request list is acted on (#80498).
     try:
         selected = engine.select_context(
-            api_messages,
+            [_clone_message_for_send(m) for m in api_messages],
             conversation_messages=(
                 [_clone_message_for_send(m) for m in conversation_messages]
                 if conversation_messages is not None else None
