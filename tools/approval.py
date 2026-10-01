@@ -232,7 +232,7 @@ def _consume_external_decision(approval_id: str) -> Optional[str]:
         decision = json.loads(raw).get("decision")
     except (ValueError, AttributeError):
         decision = None
-    if decision not in _EXTERNAL_DECISIONS:
+    if not isinstance(decision, str) or decision not in _EXTERNAL_DECISIONS:
         try:
             path.unlink()
         except OSError:
@@ -261,7 +261,7 @@ def _sweep_stale_handshake_files(now: float) -> None:
                     path.unlink()
                 else:
                     live_pending.add(path.name)
-            except (OSError, ValueError):
+            except (OSError, ValueError, AttributeError):
                 try:
                     path.unlink()
                 except OSError:
