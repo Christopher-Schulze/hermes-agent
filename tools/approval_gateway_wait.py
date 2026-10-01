@@ -78,8 +78,12 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str,
             if approval_id is not None and entry is not None:
                 external_choice = _approval._consume_external_decision(approval_id)
                 if external_choice is not None:
-                    entry.result = external_choice
-                    entry.event.set()
+                    with _approval._lock:
+                        # An in-process answer or withdrawal may have settled
+                        # the entry while the response file was being read.
+                        if not entry.event.is_set():
+                            entry.result = external_choice
+                            entry.event.set()
                     return "set"
             heartbeat()
 

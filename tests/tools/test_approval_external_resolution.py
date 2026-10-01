@@ -198,8 +198,11 @@ class TestExternalDecision:
         assert not _pending_files(tmp_path)
         assert not list(_responses_dir(tmp_path).glob("*.json"))
 
+    @pytest.mark.parametrize("decision", [
+        "yolo-everything", [], {}, ["once"], 1, None,
+    ])
     def test_invalid_external_decision_fails_closed(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, decision):
         """Garbage decisions are consumed and ignored — never auto-approve."""
         _short_timeout(monkeypatch, 30)
 
@@ -207,7 +210,7 @@ class TestExternalDecision:
         assert _wait_for(lambda: _pending_files(tmp_path))
         approval_id = _pending_files(tmp_path)[0].stem
 
-        _write_response(tmp_path, approval_id, {"decision": "yolo-everything"})
+        _write_response(tmp_path, approval_id, {"decision": decision})
         assert _wait_for(
             lambda: not list(_responses_dir(tmp_path).glob("*.json")))
         assert thread.is_alive(), \
@@ -216,6 +219,43 @@ class TestExternalDecision:
         _write_response(tmp_path, approval_id, {"decision": "deny"})
         thread.join(timeout=5)
         _assert_decision(box["result"], resolved=True, choice="deny")
+        assert not _pending_files(tmp_path)
+        assert not list(_responses_dir(tmp_path).glob("*.json"))
+
+    @pytest.mark.parametrize("settlement", ["deny", "withdraw"])
+    def test_external_decision_preserves_in_process_settlement(
+            self, tmp_path, monkeypatch, settlement):
+        """A decision read from disk cannot overwrite an acknowledged outcome."""
+        from tools import approval as mod
+        _short_timeout(monkeypatch, 30)
+        consume = mod._consume_external_decision
+
+        def _settle_while_reading(approval_id):
+            choice = consume(approval_id)
+            if choice is not None:
+                if settlement == "deny":
+                    assert mod.resolve_gateway_approval(SESSION_KEY, "deny") == 1
+                else:
+                    request_id = mod.list_gateway_approvals(SESSION_KEY)[0]["request_id"]
+                    assert mod.withdraw_gateway_approval(
+                        SESSION_KEY, request_id, "session closed")
+            return choice
+
+        monkeypatch.setattr(mod, "_consume_external_decision", _settle_while_reading)
+        thread, box = _start_wait()
+        assert _wait_for(lambda: _pending_files(tmp_path))
+        approval_id = _pending_files(tmp_path)[0].stem
+        _write_response(tmp_path, approval_id, {"decision": "always"})
+
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        if settlement == "deny":
+            _assert_decision(box["result"], resolved=True, choice="deny")
+        else:
+            _assert_decision(box["result"], resolved=True, choice=None,
+                             cancelled="session closed")
+        assert not _pending_files(tmp_path)
+        assert not list(_responses_dir(tmp_path).glob("*.json"))
 
     def test_unparseable_response_file_ignored(self, tmp_path, monkeypatch):
         """A corrupt response file is discarded without resolving."""
@@ -305,6 +345,21 @@ class TestApprovalIdValidation:
 
 
 class TestStaleSweep:
+    @pytest.mark.parametrize("record", [[], None, "invalid", 7])
+    def test_publish_discards_non_object_pending_records(self, tmp_path, record):
+        from tools import approval as mod
+
+        pending = _pending_dir(tmp_path)
+        pending.mkdir(parents=True)
+        malformed = pending / "abc123def456.json"
+        malformed.write_text(json.dumps(record), encoding="utf-8")
+
+        mod._publish_pending_approval(
+            "f6e5d4c3b2a1", SESSION_KEY, dict(APPROVAL_DATA), 60, "gateway")
+
+        assert not malformed.exists()
+        assert [path.name for path in _pending_files(tmp_path)] == ["f6e5d4c3b2a1.json"]
+
     def test_live_pending_preserves_old_response_until_expiry(self, tmp_path):
         from tools import approval as mod
 
