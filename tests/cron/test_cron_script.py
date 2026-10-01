@@ -888,6 +888,36 @@ class TestScriptTimeoutZeroMeansUnlimited:
         monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"script_timeout_seconds": raw}})
         assert _get_script_timeout() == sched._DEFAULT_SCRIPT_TIMEOUT
 
+    @pytest.mark.parametrize("raw", ["false", "off", "no", "true", "on", "yes", "0", "45"])
+    def test_yaml_boolean_timeout_does_not_become_a_numeric_limit(
+        self, cron_env, monkeypatch, raw,
+    ):
+        from cron import scheduler as sched
+        from cron.scheduler_script import _get_script_timeout
+        from hermes_cli.config import load_config
+
+        (cron_env / "config.yaml").write_text(
+            f"cron:\n  script_timeout_seconds: {raw}\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(sched, "load_config", load_config)
+        configured = load_config()["cron"]["script_timeout_seconds"]
+        if isinstance(configured, bool):
+            expected = sched._DEFAULT_SCRIPT_TIMEOUT
+        else:
+            expected = None if configured == 0 else configured
+
+        assert _get_script_timeout() == expected
+
+    @pytest.mark.parametrize("raw", [False, True])
+    def test_boolean_module_override_falls_through_to_config(self, monkeypatch, raw):
+        from cron import scheduler as sched
+        from cron.scheduler_script import _get_script_timeout
+
+        monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", raw)
+        monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"script_timeout_seconds": 45}})
+
+        assert _get_script_timeout() == 45
+
     def test_unlimited_script_runs_past_the_default_deadline(self, cron_env, monkeypatch):
         from cron import scheduler as sched
         from cron.scheduler_script import _run_job_script
