@@ -156,6 +156,26 @@ class TestPublishLifecycle:
         assert box["result"]["notify_failed"] is True
         assert not _pending_files(tmp_path)
 
+    def test_mirror_uses_the_current_prompt_wait_window(self, tmp_path, monkeypatch):
+        """Desktop/TUI approvals stay externally visible until their wait ends."""
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
+        from tools import approval as mod, approval_context as ctx
+        _short_timeout(monkeypatch, 1)
+
+        def _desktop_notify(data):
+            ctx.set_prompts_wait_for_answer()
+
+        thread, box = _start_wait(notify_cb=_desktop_notify)
+        assert _wait_for(lambda: _pending_files(tmp_path))
+        record = json.loads(_pending_files(tmp_path)[0].read_text())
+        assert record["expires_at"] - record["created_at"] == int(MAX_SAFE_TIMEOUT_S)
+
+        assert mod.resolve_gateway_approval(SESSION_KEY, "deny") == 1
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        _assert_decision(box["result"], resolved=True, choice="deny")
+        assert not _pending_files(tmp_path)
+
     def test_timeout_retracts_mirror(self, tmp_path, monkeypatch):
         """An unanswered approval leaves no stale pending file behind."""
         _short_timeout(monkeypatch, 1)
@@ -345,6 +365,21 @@ class TestApprovalIdValidation:
 
 
 class TestStaleSweep:
+    @pytest.mark.parametrize("expires_at", [None, "invalid", [], {}, float("nan")])
+    def test_publish_discards_invalid_expiry(self, tmp_path, expires_at):
+        from tools import approval as mod
+
+        pending = _pending_dir(tmp_path)
+        pending.mkdir(parents=True)
+        malformed = pending / "abc123def456.json"
+        malformed.write_text(json.dumps({"expires_at": expires_at}), encoding="utf-8")
+
+        mod._publish_pending_approval(
+            "f6e5d4c3b2a1", SESSION_KEY, dict(APPROVAL_DATA), 60, "gateway")
+
+        assert not malformed.exists()
+        assert [path.name for path in _pending_files(tmp_path)] == ["f6e5d4c3b2a1.json"]
+
     @pytest.mark.parametrize("record", [[], None, "invalid", 7])
     def test_publish_discards_non_object_pending_records(self, tmp_path, record):
         from tools import approval as mod
