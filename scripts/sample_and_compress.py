@@ -18,6 +18,7 @@ Usage:
 import json
 import os
 import random
+from itertools import islice
 from pathlib import Path
 from typing import Dict, Iterator, List, Any, Tuple
 import fire
@@ -172,6 +173,12 @@ def sample_from_datasets(
             if yielded == 0:
                 print(f"   ⚠️  Skipping {dataset_name} (no entries loaded)")
 
+    def _counted_entries(pool) -> Iterator[Tuple[Dict, int]]:
+        entries = _iter_all_entries()
+        # imap's feeder/result queues otherwise consume the entire stream.
+        while batch := list(islice(entries, num_proc * 100)):
+            yield from pool.imap_unordered(_count_tokens_for_entry, batch, chunksize=100)
+
     print("\n🔍 Filtering + reservoir-sampling in one streaming pass...")
 
     sampled: List[Dict[str, Any]] = []
@@ -186,9 +193,7 @@ def sample_from_datasets(
         initializer=_init_tokenizer_worker,
         initargs=(tokenizer_name,),
     ) as pool:
-        for entry, token_count in pool.imap_unordered(
-            _count_tokens_for_entry, _iter_all_entries(), chunksize=100
-        ):
+        for entry, token_count in _counted_entries(pool):
             processed += 1
             if processed % 1000 == 0:
                 print(f"   Processed {processed:,}...", end="\r")
@@ -314,8 +319,7 @@ def merge_output_to_single_jsonl(input_dir: Path, output_file: Path):
                     for line in handle:
                         if not line.strip():
                             continue
-                        # Re-serialize so pretty-printed / multi-line JSON
-                        # becomes one valid JSONL row without holding the file.
+                        # Normalize each JSONL row without retaining the file.
                         out.write(json.dumps(json.loads(line), ensure_ascii=False) + "\n")
                         count += 1
             out.flush()
