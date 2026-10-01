@@ -544,7 +544,7 @@ class TestReadNousAccessToken:
 
 
 # ---------------------------------------------------------------------------
-# get_tool_gateway_scheme
+# Dead guest credential replacement
 # ---------------------------------------------------------------------------
 
 
@@ -918,7 +918,7 @@ class TestManagedToolGatewayConfig:
             managed_mode=True,
         )
         with pytest.raises((AttributeError, TypeError)):
-            cfg.vendor = "changed"  # type: ignore[misc]
+            setattr(cfg, "vendor", "changed")
 
     def test_fields_preserved(self):
         cfg = ManagedToolGatewayConfig(
