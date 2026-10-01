@@ -208,16 +208,18 @@ class TestFleetRestartTimeoutIsolation:
         assert seen == ["hermes-gateway-coder"]
 
 
-class TestFleetRestartBestEffort:
-    def test_discovers_and_restarts_hermes_webui_units(self, monkeypatch):
-        # #95882 — the user-facing boundary is that ``hermes update`` runs
-        # ``systemctl list-units`` with the right globs and restarts the units.
-        # Mock the subprocess boundary so this is testable on macOS/CI.
+class TestFleetRestartBoundary:
+    def test_discovers_and_restarts_hermes_webui_units(self, monkeypatch, tmp_path):
+        # Exercise current discovery and per-unit restart without faking the OS.
+        # Only subprocess responses and the test's home locations are controlled.
         from hermes_cli.update_cmd_fleet import (
-            _restart_systemd_gateway_units_best_effort,
+            _restart_one_systemd_gateway_unit,
             _systemd_gateway_unit_listings,
         )
 
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setattr("hermes_cli.gateway._SYSTEM_UNIT_DIR", tmp_path / "system")
         calls: list[list[str]] = []
 
         def fake_run(cmd, **kwargs):
@@ -227,37 +229,59 @@ class TestFleetRestartBestEffort:
                     cmd, 0, stdout="\n".join(
                         [
                             "hermes-webui.service loaded active running",
+                            "hermes-webui-prod.service loaded active running",
+                            "hermes-webui-foreign.service loaded active running",
+                            "hermes-webuictl.service loaded active running",
                             "hermes-serve.service loaded active running",
                         ]
                     )
                 )
             stdout = "active\n" if "is-active" in cmd else ""
+            if "--property=MainPID" in cmd:
+                stdout = "0\n"
+            if "--property=Environment" in cmd:
+                home = tmp_path / ("foreign" if "hermes-webui-foreign" in cmd else "hermes")
+                stdout = f"HERMES_HOME={home}\n"
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         failed: list[str] = []
-        listings = list(_systemd_gateway_unit_listings())
-        _restart_systemd_gateway_units_best_effort(failed, listings)
+        restarted: list[str] = []
+        for scope, scope_cmd, result in _systemd_gateway_unit_listings():
+            _for_each_systemd_gateway_unit(
+                result.stdout,
+                process_unit=lambda name: _restart_one_systemd_gateway_unit(
+                    name, scope=scope, scope_cmd=scope_cmd, drain_budget=5.0,
+                    _manage_cmd_cache={scope: scope_cmd + ["--no-ask-password"]},
+                    restarted_services=restarted, failed_or_stale_units=failed,
+                ),
+                on_unit_timeout=lambda *_: pytest.fail("unexpected timeout"),
+            )
 
         list_units_calls = [c for c in calls if "list-units" in c]
         assert list_units_calls == [
             prefix + [
                 "list-units", "hermes-gateway*", "hermes-serve*",
-                "hermes-webui*", "--plain", "--no-legend", "--no-pager",
+                "hermes-dashboard*", "hermes-webui*", "--plain", "--no-legend", "--no-pager",
             ]
             for prefix in (["systemctl", "--user"], ["systemctl"])
         ]
 
         restart_calls = [
-            c for c in calls if "restart" in c and "hermes-webui" in c
+            c for c in calls if "restart" in c and c[-1].startswith("hermes-webui")
         ]
-        assert len(restart_calls) == 2
-        assert "--user" in restart_calls[0]
-        assert "--user" not in restart_calls[1]
-        assert [c for c in calls if c[-2:] == ["is-active", "hermes-webui"]] == [
-            ["systemctl", "--user", "is-active", "hermes-webui"],
-            ["systemctl", "is-active", "hermes-webui"],
+        assert restart_calls == [
+            prefix + ["--no-ask-password", "restart", name]
+            for prefix in (["systemctl", "--user"], ["systemctl"])
+            for name in ("hermes-webui", "hermes-webui-prod")
         ]
+        for name in ("hermes-webui", "hermes-webui-prod"):
+            assert [c for c in calls if c[-2:] == ["is-active", name]] == [
+                prefix + ["is-active", name]
+                for prefix in (["systemctl", "--user"], ["systemctl"])
+                for _ in range(2)  # Before restart and after the new process starts.
+            ]
+        assert restarted == ["hermes-webui", "hermes-webui-prod", "hermes-serve"] * 2
         assert failed == []
 
 
@@ -303,4 +327,3 @@ class TestIncompleteFleetRestartWarning:
         assert out.count("hermes-gateway-xiaomo5") == 1
         assert "hermes-gateway-xiaomo6" in out
         assert "pre-update code" in out
-
