@@ -327,6 +327,36 @@ async def test_whatsapp_omitted_mode_preserves_pairing_compatibility(monkeypatch
     adapter.send.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    "scoped_mode, yaml_mode, expected",
+    [(None, None, "pair"), ("bot", "self-chat", "pair"),
+     ("self-chat", "bot", "ignore"), (None, "self-chat", "ignore"),
+     (None, "bot", "pair")],
+)
+def test_whatsapp_mode_uses_owning_profile(monkeypatch, tmp_path, scoped_mode, yaml_mode, expected):
+    """A scoped miss never borrows the default profile's self-chat mode; env beats YAML."""
+    from agent import secret_scope
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+    previous_multiplex = secret_scope.is_multiplex_active()
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"WHATSAPP_MODE": scoped_mode} if scoped_mode else {})
+    try:
+        adapter = WhatsAppAdapter(PlatformConfig(extra={"mode": yaml_mode} if yaml_mode else {}))
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(previous_multiplex)
+
+    config = GatewayConfig(platforms={Platform.WHATSAPP: PlatformConfig(extra={"mode": "self-chat"})})
+    runner, _default_adapter = _make_runner(Platform.WHATSAPP, config)
+    runner._profile_adapters = {"coder": {Platform.WHATSAPP: adapter}}
+
+    assert runner._get_unauthorized_dm_behavior(Platform.WHATSAPP, profile="coder") == expected
+
+
 def test_whatsapp_platform_pair_override_beats_self_chat_safety(monkeypatch):
     """A per-platform pair override remains an explicit opt-in."""
     _clear_auth_env(monkeypatch)

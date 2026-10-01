@@ -734,30 +734,10 @@ class GatewayAuthorizationMixin:
         if platform == Platform.WHATSAPP:
             adapter = self._authorization_adapter(platform, profile)
             mode = getattr(adapter, "_whatsapp_mode", None) if adapter is not None else None
-            mode_explicit = (
-                getattr(adapter, "_whatsapp_mode_explicit", None)
-                if adapter is not None
-                else None
-            )
             if mode is None:
-                config = getattr(self, "config", None)
-                platform_cfg = (
-                    config.platforms.get(platform)
-                    if config is not None and hasattr(config, "platforms")
-                    else None
-                )
-                extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
-                if isinstance(extra, dict) and extra.get("mode"):
-                    mode = extra.get("mode")
-                    mode_explicit = True
-                else:
-                    from agent.secret_scope import UnscopedSecretError, get_secret
-                    try:
-                        mode = get_secret("WHATSAPP_MODE")
-                    except UnscopedSecretError:
-                        mode = os.getenv("WHATSAPP_MODE")
-                    mode_explicit = bool(str(mode or "").strip())
-            if mode_explicit and str(mode).strip().lower() == "self-chat":
+                extra = _adapter_config_extra(adapter) if adapter is not None and hasattr(adapter, "config") else self._config_extra(platform)
+                mode = _extra_or_secret(extra, "mode", "WHATSAPP_MODE", "")
+            if str(mode).strip().lower() == "self-chat":
                 return "ignore"
         if config and hasattr(config, "unauthorized_dm_behavior") and config.unauthorized_dm_behavior != "pair":
             return config.unauthorized_dm_behavior
