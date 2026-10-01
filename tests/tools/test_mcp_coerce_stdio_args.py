@@ -47,6 +47,9 @@ class TestCoerceMcpStdioArgs:
     def test_legacy_plain_string_shell_split(self):
         assert _coerce("-y 'pkg with spaces'") == ["-y", "pkg with spaces"]
 
+    def test_quoted_scalar_preserves_one_argument(self):
+        assert _coerce('"pkg with spaces"') == ["pkg with spaces"]
+
     def test_scalar_int_coerced(self):
         assert _coerce(42) == ["42"]
 
