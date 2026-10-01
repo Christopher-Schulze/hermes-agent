@@ -227,7 +227,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     # Mirror the pending approval for external supervisors (e.g. the MCP
     # bridge) now that the user has been notified; the wait loop below
     # consumes their decision each tick (#21563).
-    timeout = _ctx._get_approval_timeout()
+    timeout = _ctx.approval_wait_seconds()
     _approval._publish_pending_approval(approval_id, session_key, approval_data,
                                         timeout, surface)
 
