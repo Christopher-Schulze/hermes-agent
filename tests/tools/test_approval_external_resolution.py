@@ -156,19 +156,16 @@ class TestPublishLifecycle:
         assert box["result"]["notify_failed"] is True
         assert not _pending_files(tmp_path)
 
-    def test_mirror_uses_the_current_prompt_wait_window(self, tmp_path, monkeypatch):
-        """Desktop/TUI approvals stay externally visible until their wait ends."""
-        from agent.deadline import MAX_SAFE_TIMEOUT_S
+    @pytest.mark.parametrize("seconds", [30, 300])
+    def test_mirror_uses_the_current_prompt_wait_window(self, tmp_path, monkeypatch, seconds):
+        """The mirror expires in the same configured window as the wait loop."""
         from tools import approval as mod, approval_context as ctx
-        _short_timeout(monkeypatch, 1)
+        _short_timeout(monkeypatch, seconds)
 
-        def _desktop_notify(data):
-            ctx.set_prompts_wait_for_answer()
-
-        thread, box = _start_wait(notify_cb=_desktop_notify)
+        thread, box = _start_wait()
         assert _wait_for(lambda: _pending_files(tmp_path))
         record = json.loads(_pending_files(tmp_path)[0].read_text())
-        assert record["expires_at"] - record["created_at"] == int(MAX_SAFE_TIMEOUT_S)
+        assert record["expires_at"] - record["created_at"] == ctx._get_approval_timeout()
 
         assert mod.resolve_gateway_approval(SESSION_KEY, "deny") == 1
         thread.join(timeout=5)
