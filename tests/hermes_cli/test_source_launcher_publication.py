@@ -550,3 +550,56 @@ def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):
     (repo / "hermes_integrity_probe.py").write_text("import selected_probe\n", encoding="utf-8")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("hermes_integrity_probe",))
     assert update_cmd_validation._critical_module_import_failures(repo, report_runtime_errors=True) == {}
+
+
+def _fixture_store_home(tmp_path: Path, monkeypatch, *, scratch: bool) -> Path:
+    """A fixture home whose store records one live interpreter.
+
+    ``scratch=True`` places the home under ``cache/scratch`` — the disposable
+    tree e2e fixtures build and the idle sweep removes (#131745).
+    """
+    home = tmp_path / ("cache/scratch/hermes-e2e-fixture/hermes-home" if scratch else "durable-home")
+    entry = home / "tools" / "python-fixture"
+    interpreter = entry / "bin" / "python3"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    interpreter.chmod(0o755)
+    (home / "tools" / "facts.json").write_text(
+        json.dumps({"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    return interpreter
+
+
+@pytest.mark.platforms("posix")
+def test_publication_refuses_a_scratch_bound_store_python(tmp_path, monkeypatch):
+    """A fixture home's store Python must never be minted into a durable launcher (#131745)."""
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    scratch_python = _fixture_store_home(tmp_path, monkeypatch, scratch=True)
+    # The resolution path really offers the fixture interpreter to publication.
+    assert _launchers.resolve_store_python(repo) == scratch_python
+    out = tmp_path / "commands"
+    out.mkdir()
+    existing = out / "hermes"
+    existing.write_text(
+        "#!/bin/sh\nexec /durable/tools/python/bin/python3 -I -c 'x' \"$@\"\n", encoding="utf-8")
+    before = existing.read_bytes()
+    assert _launchers.stage_launcher("hermes", repo, out) is None
+    assert existing.read_bytes() == before  # the durable launcher is not rebound
+    assert _launchers.ensure_install_launchers(repo, out) == []
+
+
+@pytest.mark.platforms("posix")
+def test_publication_still_publishes_a_durable_store_python(tmp_path, monkeypatch):
+    """The same fixture layout outside scratch keeps publishing (no over-refusal)."""
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    durable_python = _fixture_store_home(tmp_path, monkeypatch, scratch=False)
+    assert _launchers.resolve_store_python(repo) == durable_python
+    out = tmp_path / "commands"
+    out.mkdir()
+    published = _launchers.stage_launcher("hermes", repo, out)
+    assert published is not None
+    assert published == out / "hermes"
+    assert str(durable_python) in published.read_text(encoding="utf-8")

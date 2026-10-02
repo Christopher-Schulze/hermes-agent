@@ -371,11 +371,28 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
+def _is_disposable_store_python(python_exe: Path) -> bool:
+    """True when *python_exe* lives under a ``cache/scratch`` tree.
+
+    Scratch roots hold disposable e2e fixture homes and are removed by the
+    idle sweep. A durable launcher bound to one dies with the sweep (exit 127
+    on every start), so publication must refuse it (#131745).
+    """
+    parts = Path(python_exe).parts
+
+    return any(part == "cache" and parts[index + 1] == "scratch" for index, part in enumerate(parts[:-1]))
+
+
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
-    """Publish one launcher bound to store Python, or refuse missing tools."""
+    """Publish one launcher bound to store Python, or refuse missing tools.
+
+    A store interpreter under a scratch tree is a fixture leak, not an
+    install: refuse it instead of minting a launcher that dies with the
+    sweep (#131745).
+    """
     repo_root = Path(repo_root)
     store_python = resolve_store_python(repo_root)
-    if store_python is not None:
+    if store_python is not None and not _is_disposable_store_python(store_python):
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
