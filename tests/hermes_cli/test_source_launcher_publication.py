@@ -558,7 +558,15 @@ def _fixture_store_home(tmp_path: Path, monkeypatch, *, scratch: bool) -> Path:
     ``scratch=True`` places the home under ``cache/scratch`` — the disposable
     tree e2e fixtures build and the idle sweep removes (#131745).
     """
-    home = tmp_path / ("cache/scratch/hermes-e2e-fixture/hermes-home" if scratch else "durable-home")
+    if scratch:
+        from hermes_constants import get_scratch_dir
+
+        scratch_root = get_scratch_dir(tmp_path, prune=False)
+        home = scratch_root / "hermes-e2e-fixture/hermes-home"
+        monkeypatch.setenv("HERMES_SCRATCH_DIR", str(scratch_root))
+    else:
+        home = tmp_path / "durable-home"
+        monkeypatch.delenv("HERMES_SCRATCH_DIR", raising=False)
     entry = home / "tools" / "python-fixture"
     interpreter = entry / "bin" / "python3"
     interpreter.parent.mkdir(parents=True)
@@ -574,10 +582,44 @@ def _fixture_store_home(tmp_path: Path, monkeypatch, *, scratch: bool) -> Path:
 
 
 @pytest.mark.platforms("posix")
-def test_publication_refuses_a_scratch_bound_store_python(tmp_path, monkeypatch):
+@pytest.mark.parametrize("binding", ["direct", "symlink-into", "symlink-out", "case-alias", "pruned-parent", "active-home", "scratch-repo", "different-scratch"])
+def test_publication_refuses_a_scratch_bound_store_python(tmp_path, monkeypatch, binding):
     """A fixture home's store Python must never be minted into a durable launcher (#131745)."""
     repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
     scratch_python = _fixture_store_home(tmp_path, monkeypatch, scratch=True)
+    if binding == "symlink-into":
+        target = scratch_python
+        scratch_python = _fixture_store_home(tmp_path, monkeypatch, scratch=False)
+        scratch_python.unlink()
+        scratch_python.symlink_to(target)
+        monkeypatch.setenv("HERMES_SCRATCH_DIR", str(tmp_path / "cache/scratch"))
+    elif binding == "symlink-out":
+        scratch_python.unlink()
+        scratch_python.symlink_to(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+    elif binding == "case-alias":
+        entry = Path(str(scratch_python.parent.parent).replace("/scratch/", "/SCRATCH/"))
+        if entry.is_dir():  # exercise case aliasing only on a case-insensitive volume
+            scratch_python = entry / "bin/python3"
+            facts = scratch_python.parents[2] / "facts.json"
+            facts.write_text(json.dumps({"packages": {"python": {"entry": str(entry)}}}), encoding="utf-8")
+    elif binding == "pruned-parent":
+        import hermes_constants
+
+        monkeypatch.setattr(hermes_constants, "_scratch_pruned_once", False)
+        hermes_constants.get_scratch_dir(tmp_path)
+        monkeypatch.delenv("HERMES_SCRATCH_DIR")  # a rehomed child loses its parent's marker
+    elif binding == "active-home":
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(scratch_python.parents[2]))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_SCRATCH_DIR")
+    elif binding in ("scratch-repo", "different-scratch"):
+        from hermes_constants import get_scratch_dir
+
+        root = (scratch_python.parents[5] if binding == "scratch-repo" else
+                get_scratch_dir(tmp_path / "other", prune=False))
+        destination = root / "repo"
+        shutil.move(repo, destination)
+        repo = destination
     # The resolution path really offers the fixture interpreter to publication.
     assert _launchers.resolve_store_python(repo) == scratch_python
     out = tmp_path / "commands"
@@ -589,17 +631,41 @@ def test_publication_refuses_a_scratch_bound_store_python(tmp_path, monkeypatch)
     assert _launchers.stage_launcher("hermes", repo, out) is None
     assert existing.read_bytes() == before  # the durable launcher is not rebound
     assert _launchers.ensure_install_launchers(repo, out) == []
+    if binding == "scratch-repo":
+        with pytest.raises(OSError):
+            _launchers._publish_conveniences(repo, out, ("hermes",), create=False)
+        assert existing.read_bytes() == before
 
 
 @pytest.mark.platforms("posix")
-def test_publication_still_publishes_a_durable_store_python(tmp_path, monkeypatch):
+@pytest.mark.parametrize("binding", ["ordinary", "unowned-cache-scratch", "durable-symlink", "same-scratch", "case-alias-scratch"])
+def test_publication_still_publishes_a_durable_store_python(tmp_path, monkeypatch, binding):
     """The same fixture layout outside scratch keeps publishing (no over-refusal)."""
     repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
-    durable_python = _fixture_store_home(tmp_path, monkeypatch, scratch=False)
+    own_scratch = binding in ("same-scratch", "case-alias-scratch")
+    durable_python = _fixture_store_home(tmp_path, monkeypatch, scratch=own_scratch)
+    if binding == "unowned-cache-scratch":
+        lookalike = tmp_path / "unowned/cache/scratch/python-fixture/bin/python3"
+        lookalike.parent.mkdir(parents=True)
+        shutil.copy2(durable_python, lookalike)
+        (durable_python.parents[2] / "facts.json").write_text(
+            json.dumps({"packages": {"python": {"entry": str(lookalike.parent.parent)}}}), encoding="utf-8")
+        durable_python = lookalike
+    elif binding == "durable-symlink":
+        durable_python.unlink()
+        durable_python.symlink_to(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+    elif own_scratch:
+        destination = durable_python.parents[5] / "repo"
+        shutil.move(repo, destination)
+        repo = destination
+        alias = Path(str(repo).replace("/scratch/", "/SCRATCH/"))
+        if binding == "case-alias-scratch" and alias.is_dir():
+            repo = alias
     assert _launchers.resolve_store_python(repo) == durable_python
-    out = tmp_path / "commands"
-    out.mkdir()
+    out = repo / ".hermes/bin" if own_scratch else tmp_path / "commands"
+    out.mkdir(parents=True)
     published = _launchers.stage_launcher("hermes", repo, out)
     assert published is not None
     assert published == out / "hermes"
     assert str(durable_python) in published.read_text(encoding="utf-8")
+    assert len(_launchers.ensure_install_launchers(repo, out)) == len(_launchers.ENTRY_POINTS)

@@ -353,10 +353,13 @@ def _owns_launcher(target: Path, root: Path) -> bool:
 
 def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = True) -> dict[Path, bool]:
     """User-bin commands forward to durable local launchers, not a Python pin."""
+    if not create and not out_dir.is_dir():
+        return {}
+    python = resolve_store_python(root)
+    if python is not None and _is_unsafe_scratch_binding(python, root, out_dir):
+        raise OSError("refusing to expose a disposable scratch launcher outside its root")
     if create:
         out_dir.mkdir(parents=True, exist_ok=True)
-    elif not out_dir.is_dir():
-        return {}
     published = {}
     for name in names:
         target = out_dir / name
@@ -371,28 +374,53 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     return published
 
 
-def _is_disposable_store_python(python_exe: Path) -> bool:
-    """True when *python_exe* lives under a ``cache/scratch`` tree.
+def _is_unsafe_scratch_binding(python_exe: Path, repo_root: Path, out_dir: Path) -> bool:
+    """Refuse to bind a durable publication to Hermes' disposable scratch area.
 
-    Scratch roots hold disposable e2e fixture homes and are removed by the
-    idle sweep. A durable launcher bound to one dies with the sweep (exit 127
-    on every start), so publication must refuse it (#131745).
+    A child may rehome itself, leaving only the parent's prune stamp. Unmarked
+    lookalike paths are not scratch; both a disposable symlink and its target
+    matter because the launcher embeds the former. A fixture may publish within
+    its own root, but neither its repository nor its output may escape that root.
+    Never create or prune here.
     """
-    parts = Path(python_exe).parts
+    from hermes_constants import (
+        SCRATCH_DIR_MARKER_ENV, _SCRATCH_PRUNE_STAMP,
+        get_default_hermes_root, get_hermes_home,
+    )
 
-    return any(part == "cache" and parts[index + 1] == "scratch" for index, part in enumerate(parts[:-1]))
+    try:
+        roots = {home / "cache" / "scratch" for home in
+                 (get_default_hermes_root(), get_hermes_home())}
+        marker = os.environ.get(SCRATCH_DIR_MARKER_ENV)
+        if marker:
+            roots.add(Path(marker).expanduser())
+        live_roots = [root for root in roots if root.is_dir()]
+        binding = Path(python_exe).absolute()
+        destinations = (Path(repo_root).resolve(), Path(out_dir).resolve())
+        for path in (binding, binding.resolve(strict=True)):
+            for ancestor in path.parents:
+                stamped = (ancestor.name.casefold() == "scratch"
+                           and ancestor.parent.name.casefold() == "cache"
+                           and (ancestor / _SCRATCH_PRUNE_STAMP).is_file())
+                owned = stamped or any(ancestor.samefile(root) for root in live_roots)
+                if owned and any(not any(parent.exists() and parent.samefile(ancestor)
+                                         for parent in (destination, *destination.parents))
+                                 for destination in destinations):
+                    return True
+    except (OSError, RuntimeError):
+        return True  # an unreadable binding cannot establish durable ownership
+    return False
 
 
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     """Publish one launcher bound to store Python, or refuse missing tools.
 
-    A store interpreter under a scratch tree is a fixture leak, not an
-    install: refuse it instead of minting a launcher that dies with the
-    sweep (#131745).
+    A scratch interpreter may only serve a publication inside its own scratch
+    root: never rebind a durable install or output to a fixture (#131745).
     """
     repo_root = Path(repo_root)
     store_python = resolve_store_python(repo_root)
-    if store_python is not None and not _is_disposable_store_python(store_python):
+    if store_python is not None and not _is_unsafe_scratch_binding(store_python, repo_root, out_dir):
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
@@ -408,6 +436,9 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
+    python = resolve_store_python(root)
+    if python is not None and _is_unsafe_scratch_binding(python, root, out_dir):
+        return []
     local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
     written = [str(path) for name in WINDOWS_BIN_LAUNCHERS
