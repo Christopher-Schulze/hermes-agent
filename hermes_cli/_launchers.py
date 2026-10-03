@@ -79,7 +79,7 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     the managed Python pin changes.
     """
     root = Path(repo_root)
-    if resolve_store_python(root) is None:
+    if resolve_store_python(root, honor_runtime_override=False) is None:
         return runtime_command(root, args, module=module, python=python, home=home)
     prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
     return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
@@ -100,9 +100,9 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def resolve_store_python(repo_root: Path) -> Path | None:
-    """Read PM's committed Python tool, without adopting unrecorded bytes."""
-    runtime = store_root(repo_root)
+def resolve_store_python(repo_root: Path, *, honor_runtime_override: bool = True) -> Path | None:
+    """Read committed Python; persisted launchers ignore process-only runtime overrides."""
+    runtime = store_root(repo_root, honor_runtime_override=honor_runtime_override)
     rel = "python.exe" if _is_windows() else "bin/python3"
 
     facts = runtime / "facts.json"
@@ -355,7 +355,7 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
     """User-bin commands forward to durable local launchers, not a Python pin."""
     if not create and not out_dir.is_dir():
         return {}
-    python = resolve_store_python(root)
+    python = resolve_store_python(root, honor_runtime_override=False)
     if python is not None and _is_unsafe_scratch_binding(python, root, out_dir):
         raise OSError("refusing to expose a disposable scratch launcher outside its root")
     if create:
@@ -419,7 +419,7 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     root: never rebind a durable install or output to a fixture (#131745).
     """
     repo_root = Path(repo_root)
-    store_python = resolve_store_python(repo_root)
+    store_python = resolve_store_python(repo_root, honor_runtime_override=False)
     if store_python is not None and not _is_unsafe_scratch_binding(store_python, repo_root, out_dir):
         path = mint_launcher(name, repo_root, out_dir, store_python, None)
         if path is not None and path.suffix == ".cmd":
@@ -436,7 +436,7 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
-    python = resolve_store_python(root)
+    python = resolve_store_python(root, honor_runtime_override=False)
     if python is not None and _is_unsafe_scratch_binding(python, root, out_dir):
         return []
     local = root / ".hermes" / "bin"
@@ -492,7 +492,7 @@ def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict
         return {"ok": True, "skipped": "bundle-owns-launchers"}
     if read_install_stamp(root).get("updateMechanism") == "external":
         return {"ok": True, "skipped": "externally-owned"}
-    if resolve_store_python(root) is None:
+    if resolve_store_python(root, honor_runtime_override=False) is None:
         return {"ok": True, "skipped": "no-store-python"}
     try:
         local = root / ".hermes" / "bin"
@@ -657,7 +657,7 @@ if __name__ == "__main__":
     parser.add_argument("out_dir", type=Path)
     args = parser.parse_args()
     repo_root = Path(__file__).resolve().parents[1]
-    if resolve_store_python(repo_root) is None:
+    if resolve_store_python(repo_root, honor_runtime_override=False) is None:
         parser.exit(1, "hermes: store interpreter is missing; finish pm install before publishing launchers\n")
     args.out_dir.mkdir(parents=True, exist_ok=True)
     written = ensure_install_launchers(repo_root, args.out_dir)

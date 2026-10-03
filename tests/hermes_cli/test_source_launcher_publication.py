@@ -621,7 +621,12 @@ def test_publication_refuses_a_scratch_bound_store_python(tmp_path, monkeypatch,
         shutil.move(repo, destination)
         repo = destination
     # The resolution path really offers the fixture interpreter to publication.
+    (repo / "install-stamp.json").write_text(
+        json.dumps({"updateMechanism": "self", "runtimeDir": str(scratch_python.parents[2])}),
+        encoding="utf-8",
+    )
     assert _launchers.resolve_store_python(repo) == scratch_python
+    assert _launchers.resolve_store_python(repo, honor_runtime_override=False) == scratch_python
     out = tmp_path / "commands"
     out.mkdir()
     existing = out / "hermes"
@@ -638,12 +643,16 @@ def test_publication_refuses_a_scratch_bound_store_python(tmp_path, monkeypatch,
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("binding", ["ordinary", "unowned-cache-scratch", "durable-symlink", "same-scratch", "case-alias-scratch"])
+@pytest.mark.parametrize("binding", [
+    "ordinary", "unowned-cache-scratch", "durable-symlink", "same-scratch", "case-alias-scratch",
+    "foreign-scratch", "foreign-durable", "foreign-missing",
+])
 def test_publication_still_publishes_a_durable_store_python(tmp_path, monkeypatch, binding):
     """The same fixture layout outside scratch keeps publishing (no over-refusal)."""
     repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
     own_scratch = binding in ("same-scratch", "case-alias-scratch")
     durable_python = _fixture_store_home(tmp_path, monkeypatch, scratch=own_scratch)
+    store = durable_python.parents[2]
     if binding == "unowned-cache-scratch":
         lookalike = tmp_path / "unowned/cache/scratch/python-fixture/bin/python3"
         lookalike.parent.mkdir(parents=True)
@@ -661,7 +670,22 @@ def test_publication_still_publishes_a_durable_store_python(tmp_path, monkeypatc
         alias = Path(str(repo).replace("/scratch/", "/SCRATCH/"))
         if binding == "case-alias-scratch" and alias.is_dir():
             repo = alias
-    assert _launchers.resolve_store_python(repo) == durable_python
+    (repo / "install-stamp.json").write_text(
+        json.dumps({"updateMechanism": "self", "runtimeDir": str(store)}), encoding="utf-8",
+    )
+    foreign = binding.startswith("foreign-")
+    if foreign:
+        foreign_python = (
+            _fixture_store_home(tmp_path / "foreign", monkeypatch, scratch=binding == "foreign-scratch")
+            if binding != "foreign-missing" else None
+        )
+        foreign_store = foreign_python.parents[2] if foreign_python else tmp_path / "missing-store"
+        monkeypatch.setenv("HERMES_HOME", str(store.parent))
+        monkeypatch.setenv("HERMES_RUNTIME_DIR", str(foreign_store))
+        assert _launchers.resolve_store_python(repo) == foreign_python
+    else:
+        assert _launchers.resolve_store_python(repo) == durable_python
+    assert _launchers.resolve_store_python(repo, honor_runtime_override=False) == durable_python
     out = repo / ".hermes/bin" if own_scratch else tmp_path / "commands"
     out.mkdir(parents=True)
     published = _launchers.stage_launcher("hermes", repo, out)
@@ -669,3 +693,15 @@ def test_publication_still_publishes_a_durable_store_python(tmp_path, monkeypatc
     assert published == out / "hermes"
     assert str(durable_python) in published.read_text(encoding="utf-8")
     assert len(_launchers.ensure_install_launchers(repo, out)) == len(_launchers.ENTRY_POINTS)
+    if foreign:
+        from hermes_cli import gateway, venv_sync
+
+        (repo / ".git").mkdir()
+        monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
+        gateway._prepare_service_launcher()
+        venv_sync.publish_launchers(repo)
+        local = repo / ".hermes/bin/hermes"
+        assert str(durable_python) in local.read_text(encoding="utf-8")
+        assert str(foreign_store) not in local.read_text(encoding="utf-8")
+        assert _launchers.installation_command(repo) == [str(local)]
+        assert _launchers.resolve_store_python(repo) == foreign_python

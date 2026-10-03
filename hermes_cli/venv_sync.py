@@ -80,7 +80,7 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
     if read_install_stamp(root).get("updateMechanism") == "external":
         log.info("launchers: external runtime at %s keeps its own", root)
         return
-    if resolve_store_python(root) is None:
+    if resolve_store_python(root, honor_runtime_override=False) is None:
         # A PM tree promises its launchers (tests/install/e2e-assets/
         # source-driver.sh refuses to let --version paper over the gap), so
         # this skip is a half-finished update, never a quiet no-op.
