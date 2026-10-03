@@ -368,14 +368,16 @@ class GatewaySessionWatchersMixin:
         for key, entry in _wedged:
             if entry.session_id in _scheduled_session_ids:
                 continue
-            source = entry.origin
+            source = self._restored_source(entry)
+            if source is None:
+                continue
             adapter = self._delivery_adapter_for(source)
             if adapter is None:
                 logger.debug(
                     "Session health: wedged session %s has no adapter "
                     "(platform %s) — will retry on reconnect",
                     entry.session_id,
-                    source.platform.value if source and source.platform else "?",
+                    source.platform.value,
                 )
                 continue
             # Validate the session owner against the current allowlist before

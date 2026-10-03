@@ -1301,7 +1301,7 @@ class SessionStore(
 
     def has_dangling_tool_call_tail(self, session_id: str) -> bool:
         """Return whether the persisted session ends in an unanswered tool call."""
-        db = self._db
+        db = self._db_for_session_id(session_id)
         if db is None:
             return False
         return db.has_dangling_tool_call_tail(session_id)

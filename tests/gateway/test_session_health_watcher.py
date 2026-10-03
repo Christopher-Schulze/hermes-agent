@@ -37,6 +37,7 @@ from gateway.run import (
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import (
+    RestartTestAdapter,
     make_restart_runner,
     make_restart_source,
 )
@@ -374,6 +375,70 @@ class TestSessionHealthWatcher:
         assert store._entries[session_key].resume_pending is False
         assert session_key not in runner._running_agents
         assert session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("transport_online", [True, False])
+    async def test_probe_preserves_restored_profile_store_and_transport(
+        self, tmp_path, monkeypatch, transport_online
+    ):
+        """Probe the runtime's DB, then recover only through the persisted receiving bot."""
+        home = tmp_path / "home"
+        runtime_home = home / "profiles" / "runtime"
+        transport_home = home / "profiles" / "transport"
+        runtime_home.mkdir(parents=True)
+        transport_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda name: home / "profiles" / name,
+        )
+        runner, primary = make_restart_runner()
+        runner.config.multiplex_profiles = True
+        runner._primary_profile_name = "default"
+        runtime_adapter, transport_adapter = RestartTestAdapter(), RestartTestAdapter()
+        runner._profile_adapters = {
+            "runtime": {Platform.TELEGRAM: runtime_adapter},
+            "transport": {Platform.TELEGRAM: transport_adapter} if transport_online else {},
+        }
+        store = SessionStore(sessions_dir=home / "sessions", config=runner.config)
+        runner.session_store = store
+        store._profile_home_cache["runtime"] = runtime_home
+        store._ensure_loaded()
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="profile_chat", user_id="u1", profile="runtime"
+        )
+        key = "agent:runtime:telegram:dm:profile_chat"
+        now = datetime.now()
+        entry = SessionEntry.from_dict(SessionEntry(
+            session_key=key, session_id="profile_session", created_at=now, updated_at=now,
+            origin=source, transport_profile="transport",
+        ).to_dict())
+        store._entries[key] = entry
+        store._save()
+        runtime_db = store._db_for_key(key)
+        self._add_wedged_messages(runtime_db, entry.session_id)
+        # The same ID is healthy in the ambient DB: probing that DB would miss the wedge.
+        store._db.create_session(entry.session_id, source="telegram")
+        store._db.append_message(entry.session_id, "assistant", "Already complete.")
+        assert store.has_dangling_tool_call_tail(entry.session_id) is True
+        assert store._db.has_dangling_tool_call_tail(entry.session_id) is False
+        runner._persist_active_agents = MagicMock()
+        runner._run_startup_resume_event = AsyncMock()
+
+        assert await runner._session_health_probe() == int(transport_online)
+        await asyncio.gather(*runner._background_tasks)
+
+        if transport_online:
+            called_adapter, event, called_key = runner._run_startup_resume_event.call_args.args
+            assert called_adapter is transport_adapter
+            assert called_adapter is not primary and called_adapter is not runtime_adapter
+            assert runner._authorization_home_for_source(event.source) == transport_home
+            assert called_key == key
+            assert entry.resume_pending is True
+        else:
+            runner._run_startup_resume_event.assert_not_awaited()
+            assert entry.resume_pending is False
+            assert key not in runner._running_agents
 
     @pytest.mark.asyncio
     async def test_probe_uses_async_store_before_claiming_runner_slot(self, tmp_path):
