@@ -93,6 +93,38 @@ async def test_request_model_is_resolved_before_agent_construction(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("configured_route", [False, True])
+async def test_stored_default_alias_resolves_before_agent_construction(runtime, configured_route):
+    """Legacy rows use the gateway default unless an explicit default route exists."""
+    route = {"model": "claude-routed", "provider": "anthropic"}
+    extra = {"model_routes": {"default": route}} if configured_route else {}
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra=extra))
+    db = adapter._ensure_session_db()
+    assert db is not None
+    # Seed what the old create handler persisted, bypassing the new request normalization.
+    db.create_session("legacy-default", "api_server", model="default", model_config={
+        "browser_model_lock": {"model": "default", "provider": "",
+                               "confirmed": False, "route_source": "raw_request"},
+    })
+    old_model_config = db.get_session("legacy-default")["model_config"]
+    app = web.Application()
+    for method, path, handler in adapter._http_route_table():
+        app.router.add_route(method, path, handler)
+    app["api_server_adapter"] = adapter
+    try:
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/api/sessions/legacy-default/chat", json={"message": "hello"})
+            assert response.status == 200
+            assert (await response.json())["message"]["content"] == "done"
+            assert len(runtime) == 1
+            assert runtime[0]["model"] == (route["model"] if configured_route else "claude-configured")
+            assert runtime[0]["provider"] == "anthropic"
+            assert db.get_session("legacy-default")["model_config"] == old_model_config
+    finally:
+        await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("selection", [
     {"model": "default"},
     {"model": "@anthropic:default"},

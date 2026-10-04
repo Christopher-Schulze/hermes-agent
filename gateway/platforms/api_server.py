@@ -1981,10 +1981,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return self._model_routes.get(model)
 
     def _stored_session_model(self, session: Any) -> Optional[str]:
-        """The model persisted on a session row, minus the virtual alias (replaying
-        "hermes-agent" upstream as a provider model id 400s)."""
+        """The persisted model minus virtual aliases (provider model ids would 400).
+        A configured ``default`` route remains an alias, not a literal model."""
         stored = session.get("model") if isinstance(session, dict) else None
         if not stored or stored == self._model_name:
+            return None
+        if stored == "default" and self._resolve_route(stored) is None:
             return None
         return stored
 
