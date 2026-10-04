@@ -16,6 +16,7 @@ const RESUMED = {
   messages: [{ role: 'user', text: 'resumed question' }],
   running: false,
   session_id: 'resumed-runtime',
+  session_key: 'resumed-stored',
   status: 'idle',
   stored_session_id: 'resumed-stored'
 }
@@ -28,10 +29,13 @@ function deferred<T>() {
 }
 
 /** Mount the real hook and hand its API and history setter to the test. */
-function mountLifecycle(rpc: (method: string, params: unknown) => Promise<unknown>) {
+function mountLifecycle(
+  rpc: (method: string, params: unknown) => Promise<unknown>,
+  gatewayRequest = async (method: string): Promise<unknown> => (method === 'session.resume' ? RESUMED : null)
+) {
   let api: null | ReturnType<typeof useSessionLifecycle> = null
   const setHistoryItems = vi.fn()
-  const request = vi.fn(async (method: string) => (method === 'session.resume' ? RESUMED : null))
+  const request = vi.fn(gatewayRequest)
 
   function Probe() {
     const lifecycle = useSessionLifecycle({
@@ -145,5 +149,33 @@ describe('a /resume typed while the startup session is created (#121456)', () =>
     expect(getUiState().sid).toBe('resumed-runtime')
     expect(rpc).not.toHaveBeenCalledWith('session.create', expect.anything())
     expect(rpc).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it.each(['session.activate', 'session.resume'])('keeps the session applied while %s is pending', async method => {
+    const pending = deferred<unknown>()
+    const rpc = vi.fn(async () => ({ provider_configured: true }))
+    const request = vi.fn(async (name: string) => (name === method ? pending.promise : RESUMED))
+    const { api, setHistoryItems } = mountLifecycle(rpc, request)
+
+    await vi.waitFor(() => expect(api()).toBeTruthy())
+    const loser = method === 'session.resume' ? api().resumeById('old-stored') : api().activateLiveSession('old-runtime')
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith(method, expect.anything()))
+
+    if (method === 'session.activate') {
+      await api().resumeById('resumed-stored')
+    } else {
+      api().activateLiveSession('resumed-runtime')
+      await vi.waitFor(() => expect(getUiState().sid).toBe('resumed-runtime'))
+    }
+
+    const historyCalls = setHistoryItems.mock.calls.length
+    pending.resolve({ ...RESUMED, session_id: 'old-runtime', stored_session_id: 'old-stored' })
+    await loser
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(getUiState().sid).toBe('resumed-runtime')
+    expect(getUiState().storedSid).toBe('resumed-stored')
+    expect(setHistoryItems).toHaveBeenCalledTimes(historyCalls)
+    expect(rpc).not.toHaveBeenCalledWith('session.close', { session_id: 'resumed-runtime' })
   })
 })
