@@ -406,8 +406,3 @@ class TestTodoToolFunctionEdgeCases:
         assert result["summary"]["completed"] == 1
         assert result["todos"][0]["content"] == "Orig"
 
-
-class TestCheckTodoRequirements:
-    def test_always_returns_true(self):
-        from tools.todo_tool import check_todo_requirements
-        assert check_todo_requirements() is True
