@@ -103,6 +103,9 @@ def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(mo
     from hermes_cli.observability import shared_metrics_events
 
     class _Source:
+        def source_id(self):
+            return "github"
+
         def inspect(self, identifier):
             return type("Meta", (), {"extra": {}, "identifier": identifier, "name": "gamma", "path": "gamma"})()
 
@@ -122,8 +125,9 @@ def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(mo
         def get_installed(self, name):
             return installed_entry
 
-    def record_install(*, kind, source, name, outcome):
-        events.append({"kind": kind, "source": source, "name": name, "outcome": outcome})
+    def record_install(*, kind, source, name, outcome, failure_class=None, registry=None, error=None):
+        events.append({"kind": kind, "source": source, "name": name, "outcome": outcome,
+                       "failure_class": failure_class, "registry": registry, "error": error})
 
     monkeypatch.setattr(shared_metrics_events, "record_extension_install", record_install)
 
@@ -135,11 +139,15 @@ def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(mo
         installed_entry = {"install_path": name}
         return target
 
+    def _quarantine_bundle(bundle):
+        quarantine.mkdir(parents=True, exist_ok=True)
+        return quarantine
+
     monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
     monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
     monkeypatch.setattr(hub, "HubLockFile", _Lock)
     monkeypatch.setattr(hub_search, "create_source_router", lambda auth: [_Source()])
-    monkeypatch.setattr(hub_install, "quarantine_bundle", lambda bundle: quarantine)
+    monkeypatch.setattr(hub_install, "quarantine_bundle", _quarantine_bundle)
     monkeypatch.setattr(hub_install, "install_from_quarantine", _install_from_quarantine)
     monkeypatch.setattr(guard, "scan_skill", lambda skill_path, source="community": guard.ScanResult(
         skill_name="gamma", source=source, trust_level="community", verdict="safe"))
@@ -148,17 +156,28 @@ def test_do_install_reports_presence_after_a_cancelled_and_a_confirmed_prompt(mo
     monkeypatch.setattr(skills_hub, "_finish_change", lambda *args, **kwargs: None)
     monkeypatch.setattr(skills_hub, "_announce_blueprint", lambda *args, **kwargs: None)
 
-    answers = iter(["n", "y"])
-    monkeypatch.setattr(skills_hub, "input", lambda prompt="": next(answers), raising=False)
+    monkeypatch.setattr(skills_hub, "input", lambda prompt="": "n", raising=False)
     console, _out = _console()
 
-    assert do_install("owner/repo/gamma", console=console) is False
+    assert do_install("owner/repo/gamma", console=console) is None
     assert installs == [], "a cancelled prompt installs nothing"
     assert events == [], "cancelled installs emit no install metric"
+    snapshot = _snapshot(tmp_path, ["owner/repo/gamma"])
+    assert do_snapshot_import(str(snapshot), console=console) is False
+    with pytest.raises(SystemExit) as exit_info:
+        _snapshot_cli(SimpleNamespace(snapshot_action="import", input=str(snapshot), force=False))
+    assert exit_info.value.code == 1
+    assert skills_hub.skills_command(SimpleNamespace(
+        skills_action="install", identifier="owner/repo/gamma", category="", force=False,
+    )) is None, "ordinary install cancellation keeps upstream's successful exit status"
+    assert installs == []
+    assert events == []
+    monkeypatch.setattr(skills_hub, "input", lambda prompt="": "y")
     quarantine.mkdir(parents=True, exist_ok=True)
     assert do_install("owner/repo/gamma", console=console) is True
     assert installs == ["gamma"]
-    assert events == [{"kind": "skill", "source": "hub", "name": "gamma", "outcome": "success"}]
+    assert events == [{"kind": "skill", "source": "hub", "name": "gamma", "outcome": "success",
+                       "failure_class": None, "registry": "github", "error": None}]
     assert do_install("owner/repo/gamma", console=console) is True
     assert installs == ["gamma"], "an existing skill is not reinstalled without force"
     assert len(events) == 1, "an existing skill emits no duplicate install metric"
