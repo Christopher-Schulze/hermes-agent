@@ -521,7 +521,9 @@ class EventBridge:
             return {"error": f"Invalid approval id: {approval_id}"}
 
         self._poll_approvals()
-        if not pending_path.exists():
+        with self._lock:
+            approval = self._pending_approvals.get(approval_id)
+        if approval is None or not pending_path.exists():
             return {"error": "Approval not found (unknown, expired, or "
                              f"already resolved): {approval_id}"}
 

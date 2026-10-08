@@ -124,6 +124,36 @@ class TestPollApprovals:
 
 
 class TestRespondToApproval:
+    @pytest.mark.parametrize("expires_at", [0, None, "invalid", [], {}, float("nan")])
+    def test_expired_or_invalid_pending_record_cannot_receive_response(
+            self, tmp_path, expires_at):
+        from mcp_serve import EventBridge
+        _place_pending(tmp_path, APPROVAL_ID, expires_at=expires_at)
+
+        result = EventBridge().respond_to_approval(
+            APPROVAL_ID, "once", confirm_timeout=0)
+
+        assert "error" in result
+        assert "submitted" not in result
+        assert not _responses_dir(tmp_path).exists()
+        assert (_pending_dir(tmp_path) / f"{APPROVAL_ID}.json").exists()
+
+    def test_previously_listed_approval_is_rejected_after_expiry(
+            self, tmp_path, monkeypatch):
+        from mcp_serve import EventBridge
+        now = time.time()
+        _place_pending(tmp_path, APPROVAL_ID, expires_at=now + 60)
+        bridge = EventBridge()
+        assert len(bridge.list_pending_approvals()) == 1
+        monkeypatch.setattr("mcp_serve.time.time", lambda: now + 61)
+
+        result = bridge.respond_to_approval(APPROVAL_ID, "once", confirm_timeout=0)
+
+        assert "error" in result
+        assert "submitted" not in result
+        assert not _responses_dir(tmp_path).exists()
+        assert bridge.list_pending_approvals() == []
+
     def test_unknown_approval_returns_error_not_fake_success(self, tmp_path):
         from mcp_serve import EventBridge
         result = EventBridge().respond_to_approval(UNKNOWN_APPROVAL_ID, "deny")
