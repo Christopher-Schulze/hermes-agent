@@ -282,6 +282,8 @@ def test_two_supervisors_navigate_distinct_owned_pages(chrome_cdp, supervisor_re
     not shutil.which("agent-browser") and not shutil.which("npx"),
     reason="agent-browser integration requires agent-browser or npx",
 )
+# Cleanup signals the real agent-browser daemon, which detaches from pytest's subtree.
+@pytest.mark.live_system_guard_bypass
 @pytest.mark.parametrize("retire_page", [False, True], ids=["stable-pages", "closed-page"])
 def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, supervisor_registry, monkeypatch, tmp_path, retire_page):
     """Concurrent click/fill operations stay on their task-owned CDP pages."""
@@ -368,6 +370,8 @@ def test_two_supervisors_bind_concurrent_follow_up_actions(chrome_cdp, superviso
     not shutil.which("agent-browser") and not shutil.which("npx"),
     reason="agent-browser integration requires agent-browser or npx",
 )
+# Cleanup signals the real agent-browser daemon, which detaches from pytest's subtree.
+@pytest.mark.live_system_guard_bypass
 def test_new_foreign_page_cannot_steal_follow_up_action(chrome_cdp, supervisor_registry, monkeypatch, tmp_path):
     """A new tab between browser commands cannot become this task's action target."""
     from tools import browser_tool, browser_tool_lifecycle, browser_tool_session
