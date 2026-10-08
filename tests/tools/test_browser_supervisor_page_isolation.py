@@ -299,7 +299,7 @@ def test_cdp_command_uses_owned_endpoint_and_replaces_stale_daemon(
 
     monkeypatch.setattr(browser_tool_session, "_spawn_and_collect", collect)
     result = browser_tool_session._run_cdp_page_command(
-        "task", session, ["agent-browser", "--cdp", session["cdp_url"]], command, args, "auto", 10,
+        "task", session, ["agent-browser", "--session", "task", "--cdp", session["cdp_url"]], command, args, "auto", 10,
     )
     if previous == "old" and not close_succeeds:
         assert result == {"success": False, "error": "close failed"}
@@ -310,7 +310,7 @@ def test_cdp_command_uses_owned_endpoint_and_replaces_stale_daemon(
         assert session["_page_command_endpoint"] == "ws://127.0.0.1/owned"
         assert [operation for _, operation in calls] == (["close", command] if previous == "old" else [command])
         assert calls[-1][0][-len(args)-1:] == [command, *args]
-    assert all(argv[:4] == ["agent-browser", "--cdp", "ws://127.0.0.1/owned", "--json"] for argv, _ in calls)
+    assert all(argv[:6] == ["agent-browser", "--session", "task", "--cdp", "ws://127.0.0.1/owned", "--json"] for argv, _ in calls)
     supervisor.page_command_endpoint.assert_called_once_with(timeout=10)
 
 
@@ -348,7 +348,7 @@ def test_owned_cdp_commands_preserve_windows_shim_arguments(monkeypatch, command
     monkeypatch.setattr(browser_tool_session, "_spawn_and_collect", collect)
     result = browser_tool_session._run_browser_command("task", command, args, timeout=5)
 
-    assert captured["argv"][:4] == [shim, "--cdp", endpoint, "--json"]
+    assert captured["argv"][:6] == [shim, "--session", "shim-cdp", "--cdp", endpoint, "--json"]
     if command == "eval":
         assert captured["argv"][-3:-1] == ["eval", "--base64"]
         assert base64.b64decode(captured["argv"][-1]).decode("utf-8") == args[0]
