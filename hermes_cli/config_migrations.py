@@ -918,6 +918,10 @@ def run_migrations(
             try:
                 migration_fn(results, quiet)
             except Exception as exc:
+                if migration_fn is _migrate_to_51:
+                    # Do not stamp a credential migration complete until both the
+                    # secret and its config reference have been persisted.
+                    raise
                 # A malformed nested value in one step must not abort the rest of the
                 # ladder (config loading itself fails otherwise). Loud, not silent.
                 warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
