@@ -20,7 +20,7 @@ import os
 import random
 from itertools import islice
 from pathlib import Path
-from typing import Dict, Iterator, List, Any, Tuple
+from typing import Iterator, Any
 import fire
 
 # Load environment variables
@@ -38,7 +38,7 @@ DEFAULT_DATASETS = [
 ]
 
 
-def _entry_from_hf_item(item: Dict[str, Any]) -> Dict[str, Any]:
+def _entry_from_hf_item(item: dict[str, Any]) -> dict[str, Any]:
     if "conversations" in item:
         return {"conversations": item["conversations"]}
     if "messages" in item:
@@ -46,7 +46,7 @@ def _entry_from_hf_item(item: Dict[str, Any]) -> Dict[str, Any]:
     return dict(item)
 
 
-def iter_dataset_entries(dataset_name: str) -> Iterator[Dict[str, Any]]:
+def iter_dataset_entries(dataset_name: str) -> Iterator[dict[str, Any]]:
     """Yield HuggingFace rows one at a time (streaming when the hub supports it)."""
     from datasets import load_dataset
 
@@ -80,7 +80,7 @@ def load_dataset_from_hf(dataset_name: str) -> list[dict[str, Any]]:
     return list(iter_dataset_entries(dataset_name))
 
 
-def reservoir_add(reservoir: List[Any], item: Any, seen: int, k: int, rng: random.Random) -> None:
+def reservoir_add(reservoir: list[Any], item: Any, seen: int, k: int, rng: random.Random) -> None:
     """Algorithm R: keep a uniform k-sample from a stream of `seen` items so far."""
     if k <= 0:
         return
@@ -163,7 +163,7 @@ def sample_from_datasets(
     print(f"   Parallel workers: {num_proc}")
     print()
 
-    def _iter_all_entries() -> Iterator[Dict[str, Any]]:
+    def _iter_all_entries() -> Iterator[dict[str, Any]]:
         for dataset_name in datasets:
             yielded = 0
             for entry in iter_dataset_entries(dataset_name):
@@ -173,7 +173,7 @@ def sample_from_datasets(
             if yielded == 0:
                 print(f"   ⚠️  Skipping {dataset_name} (no entries loaded)")
 
-    def _counted_entries(pool) -> Iterator[Tuple[Dict, int]]:
+    def _counted_entries(pool) -> Iterator[tuple[dict, int]]:
         entries = _iter_all_entries()
         # imap's feeder/result queues otherwise consume the entire stream.
         while batch := list(islice(entries, num_proc * 100)):
@@ -181,7 +181,7 @@ def sample_from_datasets(
 
     print("\n🔍 Filtering + reservoir-sampling in one streaming pass...")
 
-    sampled: List[Dict[str, Any]] = []
+    sampled: list[dict[str, Any]] = []
     seen_qualifying = 0
     processed = 0
     min_seen = None
