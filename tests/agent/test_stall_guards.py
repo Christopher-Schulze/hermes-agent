@@ -15,6 +15,10 @@ Two guards, both notice/re-prompt-only:
 These assert behavior contracts, not message snapshots.
 """
 
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 from agent.agent_runtime_helpers import trailing_continue_intent
 from agent.tool_guardrails import (
     IDENTICAL_RESULT_STUB_MIN_CHARS,
@@ -378,6 +382,69 @@ def test_ignores_conversational_future_offers():
     assert not trailing_continue_intent(
         "If you want, I will happily review the PR once CI is green. Just say so!"
     )
+
+
+def test_announced_step_that_hands_the_turn_to_the_user_is_not_a_stall():
+    # The turn is complete and the next step is the user's decision; re-prompting
+    # would act against their explicit "no more action until you choose".
+    assert not trailing_continue_intent(
+        "Completed: four tests passed. Options A and B are ready. "
+        "No more action until you choose. Next, I will wait for your decision."
+    )
+    assert not trailing_continue_intent("Let me now wait for your approval.")
+    assert not trailing_continue_intent("Next, I'll wait until you confirm.")
+
+
+def test_dangling_action_after_an_earlier_handoff_mention_is_still_a_stall():
+    # The user-wait exemption covers the announced step only, not earlier prose.
+    assert trailing_continue_intent(
+        "I waited for your feedback earlier. Next, I will run the tests."
+    )
+    assert trailing_continue_intent("Let me now wait for the build to finish.")
+
+
+@pytest.fixture()
+def loop_agent():
+    """AIAgent with one declared tool and a mocked OpenAI client, built through the real init path."""
+    from run_agent import AIAgent
+    from tests.agent.test_run_agent import _make_tool_defs
+
+    with (
+        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("repro_check")),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    agent.client = MagicMock()
+    return agent
+
+
+def test_turn_ending_on_a_user_handoff_gets_no_continuation_request(loop_agent):
+    from tests.agent.test_run_agent import _mock_response
+
+    handoff = (
+        "Completed: four tests passed. Options A and B are ready. "
+        "No more action until you choose. Next, I will wait for your decision."
+    )
+    loop_agent.client.chat.completions.create.side_effect = [
+        _mock_response(content=handoff, finish_reason="stop"),
+        _mock_response(content="unrequested continuation", finish_reason="stop"),
+    ]
+    with (
+        patch.object(loop_agent, "_persist_session"),
+        patch.object(loop_agent, "_save_trajectory"),
+        patch.object(loop_agent, "_cleanup_task_resources"),
+    ):
+        result = loop_agent.run_conversation("Check the fixture and wait for my decision.")
+
+    assert loop_agent.client.chat.completions.create.call_count == 1
+    assert result["final_response"] == handoff
 
 
 # ── batch-cycle loop breaker (port of can1357/oh-my-pi#10521) ───────────────

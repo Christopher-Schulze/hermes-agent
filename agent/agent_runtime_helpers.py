@@ -3427,13 +3427,20 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
 # Content longer than this is a substantive reply, not a dangling ack.
 _TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
 
+# A matched next action that is the user's turn ("Next, I will wait for your decision.") is a
+# stopping point, not a stall: re-prompting it overrides the user's explicit stop.
+_USER_HANDOFF_WAIT_RE = re.compile(
+    r"\b(?:wait|waiting|await|awaiting)(?:\s+(?:for|until))?\s+(?:your|you)\b", re.IGNORECASE,
+)
+
 
 def trailing_continue_intent(text: str) -> bool:
     """Whether ``text`` is a short reply ENDING on an announced next action (stall-guard re-prompt trigger)."""
     t = (text or "").strip()
     if not t or len(t) > _TRAILING_CONTINUE_INTENT_MAX_CHARS:
         return False
-    return bool(_TRAILING_CONTINUE_INTENT_RE.search(t[-160:]))
+    announced = _TRAILING_CONTINUE_INTENT_RE.search(t[-160:])
+    return bool(announced) and not _USER_HANDOFF_WAIT_RE.search(announced.group(0))
 
 
 # Broader tail detector for PROMOTED REASONING only (reasoning-only clean stop with tools offered
