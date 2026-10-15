@@ -1096,6 +1096,51 @@ class SessionSessionsMixin:
         combined = " AND ".join(clauses)
         return (f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"), params
 
+    def _project_compression_tips(self, sessions: list[dict[str, Any]], compact_rows: bool) -> list[dict[str, Any]]:
+        """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
+        for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
+        hold a MIDDLE segment's id)."""
+        chain_by_root: dict[str, list[str]] = {}  # only roots whose tip differs from themselves
+        for s in sessions:
+            if s.get("end_reason") == "compression":
+                chain = self.get_compression_chain(s["id"])
+                if chain and chain[-1] != s["id"]:
+                    chain_by_root[s["id"]] = chain
+        tip_rows = (
+            self._get_session_rich_rows_batch(
+                {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,
+            ) if chain_by_root else {}
+        )
+        projected = []
+        for s in sessions:
+            chain = chain_by_root.get(s["id"])
+            tip_row = tip_rows.get(chain[-1]) if chain else None
+            if not tip_row:
+                projected.append(s)
+                continue
+            merged = dict(s)
+            for key in (
+                "id", "ended_at", "end_reason", "message_count", "tool_call_count", "title", "last_active",
+                "preview", "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                "source",
+            ):
+                if key in tip_row:
+                    merged[key] = tip_row[key]
+            if merged.get("title") is None:
+                # The title is carried root->tip AFTER the publish transaction; a rotation cut off in
+                # between leaves it on the ended root, and exact-title lookups (`hermes peer dm` ->
+                # canonical "Bot Chat") must still see the lineage under its name (#106165).
+                merged["title"] = s.get("title")
+            merged["_lineage_root_id"] = s["id"]
+            merged["_lineage_ids"] = chain
+            # #121148: the projected row IS an automatic continuation, not a fresh conversation and
+            # not a user branch. The server already classifies the edge (_COMPRESSION_CHILD_SQL) but
+            # only ever used it to hide rows — surface the kind so clients can label the provenance
+            # instead of rendering a sealed-and-rotated chat as a brand-new session.
+            merged["continuation_kind"] = "compression"
+            projected.append(merged)
+        return projected
+
     def list_recent_sessions_bounded(
         self,
         *,
@@ -1296,15 +1341,8 @@ class SessionSessionsMixin:
         archived must still return. ``local_created_sources`` restricts ``source='local'``
         rows to those surfaces before LIMIT/OFFSET."""
         self.flush_token_counts()  # rows carry token/cost totals
-        # When projecting compression tips, source membership is defined by the
-        # *live tip* source, not the root. Use a SQL CTE to compute the
-        # projected tip source directly in the WHERE clause so telegram→webui
-        # chains appear under source=webui (#75625).
-        source_sql = (
-            _projected_tip_source_sql("s")
-            if project_compression_tips and not include_children
-            else "s.source"
-        )
+        # Filter on the live tip before pagination so cross-source chains remain visible (#75625).
+        source_sql = _projected_tip_source_sql("s") if project_compression_tips and not include_children else "s.source"
         where_clauses, params = _session_filter_where(
             exclude_children=not include_children, source=source, sources=sources, session_key=session_key,
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
@@ -1536,12 +1574,7 @@ class SessionSessionsMixin:
         min_message_count: int = 0, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False, exclude_sources: list[str] | None = None, include_subagents: bool = False,
     ) -> int:
-        """Count sessions with list_sessions_rich's filters so a paired "load more" total matches.
-
-        With ``exclude_children=True`` and a source filter, membership matches
-        ``list_sessions_rich`` after compression-tip projection (tip source),
-        not the raw root source (#75625).
-        """
+        """Count listing membership; ``exclude_children`` applies source filters to the live tip (#75625)."""
         source_sql = _projected_tip_source_sql("s") if exclude_children else "s.source"
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, source=source, sources=sources,
@@ -1562,11 +1595,7 @@ class SessionSessionsMixin:
         self, *, include_archived: bool = False, archived_only: bool = False,
         exclude_children: bool = False,
     ) -> dict[str, int]:
-        """``{source: count}`` via one GROUP BY; ``exclude_children`` mirrors listing visibility.
-
-        Counts use the **projected tip** source when compression tips are
-        projected (#75625).
-        """
+        """``{source: count}`` in one GROUP BY; ``exclude_children`` mirrors visible live-tip membership."""
         where_clauses, params = _session_filter_where(
             exclude_children=exclude_children, archived_only=archived_only,
             include_archived=include_archived,
@@ -1575,19 +1604,13 @@ class SessionSessionsMixin:
             from hermes_state_local import exclude_superseded_segments
             exclude_superseded_segments(self, where_clauses, params)
         where_sql = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        source_sql = (
-            _projected_tip_source_sql("s")
-            if exclude_children
-            else "COALESCE(NULLIF(s.source, ''), 'cli')"
-        )
+        source_sql = _projected_tip_source_sql("s") if exclude_children else "COALESCE(NULLIF(s.source, ''), 'cli')"
         with self._read_ctx() as conn:
             if self._conn is None:
                 raise RuntimeError("SessionDB connection is closed")
             rows = conn.execute(
-                "SELECT projected_source AS source, COUNT(*) AS count "
-                "FROM ("
-                f"SELECT {source_sql} AS projected_source "
-                f"FROM sessions s{where_sql}"
+                "SELECT projected_source AS source, COUNT(*) AS count FROM ("
+                f"SELECT {source_sql} AS projected_source FROM sessions s{where_sql}"
                 ") "
                 "GROUP BY projected_source "
                 "ORDER BY count DESC, projected_source ASC",
