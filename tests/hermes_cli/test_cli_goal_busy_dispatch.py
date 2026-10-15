@@ -17,52 +17,18 @@ commands, new-goal text prompts, and idle/busy states.
 
 from __future__ import annotations
 
-import importlib
-import sys
+import queue
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
 def _make_cli():
-    """Create a HermesCLI instance with prompt_toolkit stubbed out."""
-    _clean_config = {
-        "model": {
-            "default": "anthropic/claude-opus-4.6",
-            "base_url": "https://openrouter.ai/api/v1",
-            "provider": "auto",
-        },
-        "display": {"compact": False, "tool_progress": "all"},
-        "agent": {},
-        "terminal": {"env_type": "local"},
-    }
-    clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
-    prompt_toolkit_stubs = {
-        "prompt_toolkit": MagicMock(),
-        "prompt_toolkit.history": MagicMock(),
-        "prompt_toolkit.styles": MagicMock(),
-        "prompt_toolkit.patch_stdout": MagicMock(),
-        "prompt_toolkit.application": MagicMock(),
-        "prompt_toolkit.layout": MagicMock(),
-        "prompt_toolkit.layout.processors": MagicMock(),
-        "prompt_toolkit.filters": MagicMock(),
-        "prompt_toolkit.layout.dimension": MagicMock(),
-        "prompt_toolkit.layout.menus": MagicMock(),
-        "prompt_toolkit.widgets": MagicMock(),
-        "prompt_toolkit.key_binding": MagicMock(),
-        "prompt_toolkit.completion": MagicMock(),
-        "prompt_toolkit.formatted_text": MagicMock(),
-        "prompt_toolkit.auto_suggest": MagicMock(),
-    }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
-        "os.environ", clean_env, clear=False
-    ):
-        import cli as _cli_mod
+    """Bare CLI, matching the upstream busy-command detector fixtures."""
+    from cli import HermesCLI
 
-        _cli_mod = importlib.reload(_cli_mod)
-        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
-            _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
-        ):
-            return _cli_mod.HermesCLI()
+    return HermesCLI.__new__(HermesCLI)
 
 
 class TestGoalInlineDetector:
@@ -142,6 +108,45 @@ class TestGoalInlineDetector:
         cli._agent_running = True
         assert cli._should_handle_goal_command_inline("goal gate add test") is False
         assert cli._should_handle_goal_command_inline("") is False
+
+    @pytest.mark.parametrize("argument", [
+        "continue", "unpause", "resume last goal", "pause the rollout", "clear", "stop", "done",
+    ])
+    def test_uses_shared_control_semantics(self, argument):
+        cli = _make_cli()
+        cli._agent_running = True
+        assert cli._should_handle_goal_command_inline(f"/GOAL\t{argument}") is True
+
+    @pytest.mark.parametrize("argument", ["-- pause the rollout", "clear the backlog", "stop the cron"])
+    def test_literal_goal_text_stays_queued(self, argument):
+        cli = _make_cli()
+        cli._agent_running = True
+        assert cli._should_handle_goal_command_inline(f"/goal {argument}") is False
+
+    def test_inline_dispatch_attaches_gate_to_active_goal(self, tmp_path, monkeypatch):
+        from hermes_cli import goals
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cli = _make_cli()
+        cli._agent_running = True
+        cli.agent = MagicMock()
+        cli._pending_input = queue.Queue()
+        manager = goals.GoalManager("busy-inline-goal")
+        manager.set("keep working")
+        cli._get_goal_manager = lambda: manager
+        cli.process_command = cli._handle_goal_command
+        event = SimpleNamespace(app=MagicMock())
+
+        assert cli._tui_enter_inline_command(event, "/goal gate add pytest -q", False) is True
+
+        assert manager.is_active()
+        assert [gate.command for gate in manager.state.gates] == ["pytest -q"]
+        restored = goals.GoalManager("busy-inline-goal")
+        assert [gate.command for gate in restored.state.gates] == ["pytest -q"]
+        assert cli._pending_input.empty()
+        assert cli.agent.method_calls == []
+        event.app.current_buffer.reset.assert_called_once_with(append_to_history=True)
+        event.app.invalidate.assert_called_once_with()
 
     def test_goal_controls_do_not_touch_running_agent(self):
         """Inline goal controls mutate GoalState only, never the active agent."""
