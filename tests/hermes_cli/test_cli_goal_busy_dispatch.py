@@ -140,9 +140,13 @@ class TestGoalInlineDetector:
         assert cli._tui_enter_inline_command(event, "/goal gate add pytest -q", False) is True
 
         assert manager.is_active()
-        assert [gate.command for gate in manager.state.gates] == ["pytest -q"]
+        state = manager.state
+        assert state is not None
+        assert [gate.command for gate in state.gates] == ["pytest -q"]
         restored = goals.GoalManager("busy-inline-goal")
-        assert [gate.command for gate in restored.state.gates] == ["pytest -q"]
+        restored_state = restored.state
+        assert restored_state is not None
+        assert [gate.command for gate in restored_state.gates] == ["pytest -q"]
         assert cli._pending_input.empty()
         assert cli.agent.method_calls == []
         event.app.current_buffer.reset.assert_called_once_with(append_to_history=True)
