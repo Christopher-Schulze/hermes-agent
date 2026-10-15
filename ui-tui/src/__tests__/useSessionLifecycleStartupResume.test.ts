@@ -31,7 +31,8 @@ function deferred<T>() {
 /** Mount the real hook and hand its API and history setter to the test. */
 function mountLifecycle(
   rpc: (method: string, params: unknown) => Promise<unknown>,
-  gatewayRequest = async (method: string): Promise<unknown> => (method === 'session.resume' ? RESUMED : null)
+  gatewayRequest = async (method: string): Promise<unknown> => (method === 'session.resume' ? RESUMED : null),
+  canonical = false
 ) {
   let api: null | ReturnType<typeof useSessionLifecycle> = null
   const setHistoryItems = vi.fn()
@@ -41,7 +42,7 @@ function mountLifecycle(
     const lifecycle = useSessionLifecycle({
       colsRef: { current: 80 },
       composerActions: { setComposerTokens: vi.fn() } as any,
-      gw: { request } as any,
+      gw: { isCanonical: canonical, request } as any,
       panel: vi.fn(),
       rpc: rpc as any,
       scrollRef: { current: null },
@@ -116,6 +117,35 @@ describe('a /resume typed while the startup session is created (#121456)', () =>
     ])
     expect(rpc).toHaveBeenCalledWith('session.close', { session_id: 'startup-runtime' })
     expect(rpc).not.toHaveBeenCalledWith('session.close', { session_id: 'resumed-runtime' })
+  })
+
+  it('detaches only the stale canonical subscription without closing the resumed runtime', async () => {
+    const create = deferred<unknown>()
+    const rpc = vi.fn(async (method: string) => (method === 'session.create' ? create.promise : null))
+    const { api, setHistoryItems } = mountLifecycle(
+      rpc,
+      async () => ({ ...RESUMED, subscription_id: 'resumed-subscription' }),
+      true
+    )
+
+    await vi.waitFor(() => expect(api()).toBeTruthy())
+    const startup = api().newSession()
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('session.create', expect.anything()))
+    await api().resumeById('resumed-stored')
+    const historyCalls = setHistoryItems.mock.calls.length
+
+    create.resolve({ info: INFO, session_id: 'startup-runtime', subscription_id: 'startup-subscription' })
+
+    expect(await startup).toBeNull()
+    expect(getUiState().sid).toBe('resumed-runtime')
+    expect(getUiState().storedSid).toBe('resumed-stored')
+    expect(setHistoryItems).toHaveBeenCalledTimes(historyCalls)
+    expect(rpc).toHaveBeenCalledWith('session.detach', {
+      session_id: 'startup-runtime',
+      subscription_id: 'startup-subscription'
+    })
+    expect(rpc).not.toHaveBeenCalledWith('session.close', expect.anything())
+    expect(rpc).not.toHaveBeenCalledWith('session.detach', expect.objectContaining({ session_id: 'resumed-runtime' }))
   })
 
   it('does not create a session when the resume lands before the startup create starts', async () => {
