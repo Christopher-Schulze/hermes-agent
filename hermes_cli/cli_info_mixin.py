@@ -509,33 +509,15 @@ class CLIInfoMixin:
         Queuing them through ``_pending_input`` defers execution until the goal turn or
         entire goal is over, leading to 'no active goal' errors (#87446).
         """
-        from cli import _looks_like_slash_command
-        if not text or has_images or not _looks_like_slash_command(text):
+        from hermes_cli.commands import resolve_command
+        from hermes_cli.goal_command import is_goal_control
+
+        if not self._busy_inline_command(text, has_images, ("goal", "subgoal")):
             return False
-        if not getattr(self, "_agent_running", False):
-            return False
-        try:
-            from hermes_cli.commands import resolve_command
-            tokens = text.strip().split(None, 2)
-            base = tokens[0].lower().lstrip('/')
-            cmd = resolve_command(base)
-            if not cmd:
-                return False
-            if cmd.name == "subgoal":
-                return True
-            if cmd.name == "goal":
-                sub = tokens[1].lower() if len(tokens) > 1 else ""
-                # Control verbs intentionally own the first-token namespace:
-                # `/goal pause the rollout` is a pause command, not new goal
-                # prose. New goal text must use a non-control first token.
-                if sub in {"gate", "wait", "unwait", "pause", "resume", "status", "show"}:
-                    return True
-                if len(tokens) == 1:
-                    return True
-                return False
-            return False
-        except Exception:
-            return False
+        tokens = text.strip().split(None, 1)
+        command = resolve_command(tokens[0].lower().lstrip('/'))
+        # The shared parser owns control-word ambiguity and /goal -- <literal text>.
+        return bool(command and (command.name == "subgoal" or is_goal_control(tokens[1] if len(tokens) > 1 else "")))
 
     def handle_bang_shell(self, text: str) -> bool:
         """Run a ``!<command>`` submission. Returns True when it was handled.
