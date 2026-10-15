@@ -126,7 +126,7 @@ _DEFAULT_MAX_CHILDREN_PER_SESSION = 10
 # agent's id() is used as a process-local fallback for tests / non-session callers.
 # Protected by _session_children_lock.
 _session_children_lock = threading.Lock()
-_session_children_counts: Dict[str, int] = {}
+_session_children_counts: dict[str, int] = {}
 
 
 def _get_max_children_per_session() -> int:
