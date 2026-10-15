@@ -3784,9 +3784,7 @@ def _commit_compaction(
                 # Rotation-independent signal; the gateway reads this (not an id diff) to
                 # re-baseline transcript handling.
                 compacted_in_place = True
-                # In-place prompt is persisted inside archive_and_compact
-                # (same BEGIN IMMEDIATE as the transcript rewrite). Rotation
-                # already published prompt + compacted handoff atomically.
+                # archive_and_compact commits prompt + transcript in one BEGIN IMMEDIATE, as rotation does.
                 agent._last_flushed_db_idx = 0
             else:
                 # Bind old_session_id first: it is the rollback key in the handler below.
