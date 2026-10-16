@@ -2,7 +2,10 @@
 
 import shutil
 
+import pytest
+
 from hermes_cli import gateway
+from hermes_cli.config import OPTIONAL_ENV_VARS
 from hermes_cli.web_routers.messaging import _messaging_env_info
 from hermes_cli.web_server_messaging import _build_catalog_entry
 from plugins.platforms.signal.setup import interactive_setup
@@ -25,7 +28,12 @@ def test_signal_setup_recommends_only_native_http_daemon(monkeypatch, capsys):
     assert "bbernhard/signal-cli-rest-api" not in output
 
 
-def test_signal_dashboard_metadata_describes_native_http_daemon():
+@pytest.mark.parametrize("use_fallback", [False, True], ids=["plugin", "fallback"])
+def test_signal_dashboard_metadata_describes_native_http_daemon(monkeypatch, use_fallback):
+    if use_fallback:
+        monkeypatch.delitem(OPTIONAL_ENV_VARS, "SIGNAL_HTTP_URL")
+        monkeypatch.delitem(OPTIONAL_ENV_VARS, "SIGNAL_ACCOUNT")
+
     signal = _build_catalog_entry("signal")
     http_url = _messaging_env_info("SIGNAL_HTTP_URL")
     account = _messaging_env_info("SIGNAL_ACCOUNT")
