@@ -5,6 +5,7 @@ import shutil
 from hermes_cli import gateway
 from hermes_cli.web_routers.messaging import _messaging_env_info
 from hermes_cli.web_server_messaging import _build_catalog_entry
+from plugins.platforms.signal.setup import interactive_setup
 
 
 def test_signal_setup_recommends_only_native_http_daemon(monkeypatch, capsys):
@@ -16,7 +17,7 @@ def test_signal_setup_recommends_only_native_http_daemon(monkeypatch, capsys):
 
     monkeypatch.setattr("builtins.input", cancel_setup)
 
-    gateway._setup_signal()
+    interactive_setup()
 
     output = capsys.readouterr().out
     assert "native signal-cli HTTP daemon" in output
