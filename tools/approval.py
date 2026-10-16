@@ -198,7 +198,7 @@ def _publish_pending_approval(approval_id: str, session_key: str,
         # Degrades external supervisors (MCP bridge) only — the in-process
         # approval flow is unaffected, so warn rather than raise.
         logger.warning("Could not publish pending approval %s: %s",
-                       approval_id, exc)
+                       approval_id, exc, exc_info=True)
 
 
 def _retract_pending_approval(approval_id: str) -> None:

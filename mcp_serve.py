@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
 try:
@@ -460,7 +460,7 @@ class EventBridge:
             self._approvals_dir_mtime = dir_mtime
 
             now = time.time()
-            seen: Dict[str, dict] = {}
+            seen: dict[str, dict] = {}
             try:
                 paths = list(pending_dir.iterdir())
             except OSError:
@@ -517,7 +517,7 @@ class EventBridge:
         for event in events:
             self._enqueue(event)
 
-    def list_pending_approvals(self) -> List[dict]:
+    def list_pending_approvals(self) -> list[dict]:
         """List gateway approvals currently awaiting a decision.
 
         Reads the gateway's cross-process approval mirror, so it reflects
