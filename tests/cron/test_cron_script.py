@@ -843,7 +843,7 @@ class TestScriptTimeoutZeroMeansUnlimited:
 
         monkeypatch.delenv("HERMES_CRON_SCRIPT_TIMEOUT", raising=False)
         monkeypatch.setattr(sched, "_SCRIPT_TIMEOUT", sched._DEFAULT_SCRIPT_TIMEOUT)
-        monkeypatch.setattr(sched, "load_config", lambda: {})
+        monkeypatch.setattr(sched, "load_config", dict)
 
     def test_zero_resolves_to_unlimited_from_every_layer(self, monkeypatch):
         from cron import scheduler as sched
