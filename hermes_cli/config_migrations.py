@@ -657,8 +657,8 @@ def _migrate_to_48(results: dict[str, Any], quiet: bool) -> None:
             )(results, quiet)
 
 
-def _migrate_to_52(results: dict[str, Any], quiet: bool) -> None:
-    # 51 → 52: move custom-endpoint secrets out of config.yaml.
+def _migrate_to_53(results: dict[str, Any], quiet: bool) -> None:
+    # 52 → 53: move custom-endpoint secrets out of config.yaml.
     _c = _cfg()
     config = _c.read_raw_config()
     moved = 0
@@ -907,8 +907,8 @@ MIGRATIONS: tuple[tuple[int, Callable[[dict[str, Any], bool], None]], ...] = (
     # 51 -> 52: browser.backend + browser.extension_control dropped, AGENT_BROWSER_* .env settings ->
     # browser.* (see config_migrations_browser.migrate_to_52).
     (52, migrate_to_52),
-    # 52 → 53: move custom-endpoint secrets out of config.yaml (see _migrate_to_52).
-    (53, _migrate_to_52),
+    # 52 → 53: move custom-endpoint secrets out of config.yaml (see _migrate_to_53).
+    (53, _migrate_to_53),
 )
 
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
@@ -948,7 +948,7 @@ def run_migrations(
             try:
                 migration_fn(results, quiet)
             except Exception as exc:
-                if migration_fn is _migrate_to_52:
+                if migration_fn is _migrate_to_53:
                     # Do not stamp a credential migration complete until both the
                     # secret and its config reference have been persisted.
                     raise
