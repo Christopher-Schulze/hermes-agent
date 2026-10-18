@@ -7,7 +7,7 @@ import pytest
 from hermes_cli import gateway
 from hermes_cli.config import OPTIONAL_ENV_VARS
 from hermes_cli.web_routers.messaging import _messaging_env_info
-from hermes_cli.web_server_messaging import _build_catalog_entry
+from hermes_cli.web_server_messaging import _messaging_platform_catalog
 from plugins.platforms.signal.setup import interactive_setup
 
 
@@ -34,7 +34,7 @@ def test_signal_dashboard_metadata_describes_native_http_daemon(monkeypatch, use
         monkeypatch.delitem(OPTIONAL_ENV_VARS, "SIGNAL_HTTP_URL")
         monkeypatch.delitem(OPTIONAL_ENV_VARS, "SIGNAL_ACCOUNT")
 
-    signal = _build_catalog_entry("signal")
+    signal = next(entry for entry in _messaging_platform_catalog() if entry["id"] == "signal")
     http_url = _messaging_env_info("SIGNAL_HTTP_URL")
     account = _messaging_env_info("SIGNAL_ACCOUNT")
 
