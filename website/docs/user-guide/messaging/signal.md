@@ -52,8 +52,9 @@ sudo mkdir -p /opt/java
 case "$(uname -m)" in
   x86_64|amd64) ARCH=x64 ;;
   aarch64|arm64) ARCH=aarch64 ;;
-  *) ARCH=x64 ;;
+  *) ARCH= ;;
 esac
+: "${ARCH:?Unsupported architecture $(uname -m): install a Java 25+ JRE manually}"
 curl -fsSL "https://api.adoptium.net/v3/binary/latest/25/ga/linux/${ARCH}/jre/hotspot/normal/eclipse?project=jdk" \
   | sudo tar xz -C /opt/java
 sudo ln -sf /opt/java/jdk-25* /opt/java/current
