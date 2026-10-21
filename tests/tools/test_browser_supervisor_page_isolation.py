@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,7 +31,7 @@ def _make_supervisor() -> Any:
 async def test_attach_creates_dedicated_page_even_when_pages_exist():
     """Existing page targets must not be adopted by a second Hermes session."""
     sup = _make_supervisor()
-    calls: List[Dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
 
     async def fake_cdp(
         method: str,
@@ -120,7 +120,7 @@ async def test_two_supervisors_get_distinct_page_targets():
     async def make_attach(sup_name: str):
         sup = _make_supervisor()
         sup.task_id = sup_name
-        attached: List[str] = []
+        attached: list[str] = []
 
         async def fake_cdp(
             method: str,
@@ -171,7 +171,7 @@ async def test_reconnect_reuses_owned_page_target():
     sup = _make_supervisor()
     sup._page_target_id = "OWNED-TAB"
     sup._owns_page_target = True
-    methods: List[str] = []
+    methods: list[str] = []
 
     async def fake_cdp(
         method: str,
@@ -218,7 +218,7 @@ def test_navigate_page_uses_owned_session_and_activates_target(monkeypatch):
     sup._page_session_id = "SID-NAV"
     sup._page_target_id = "TAB-NAV"
     sup._owns_page_target = True
-    methods: List[tuple] = []
+    methods: list[tuple] = []
 
     async def fake_cdp(
         method: str,

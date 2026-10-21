@@ -9,7 +9,7 @@ from typing import Any
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import Server, ServerConnection, serve
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, WebSocketException
 
 
 class OwnedPageProxy:
@@ -105,7 +105,7 @@ class OwnedPageProxy:
                     await asyncio.gather(*tasks, return_exceptions=True)
         except ConnectionClosed:
             pass
-        except Exception as exc:
+        except (OSError, TimeoutError, ValueError, KeyError, TypeError, AttributeError, WebSocketException) as exc:
             # Upstream WebSocket exceptions may contain endpoint credentials.
             await client.close(code=1011, reason=f"Page connection failed: {type(exc).__name__}")
 

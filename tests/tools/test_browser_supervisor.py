@@ -42,6 +42,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.waiting import wait_until
+
 
 pytestmark = [
     pytest.mark.integration,
@@ -189,7 +191,13 @@ def _fire_on_page(supervisor, expression: str) -> None:
     )
     assert "error" not in result, result
     assert not result.get("result", {}).get("errorText"), result
-    time.sleep(1.5)
+    wait_until(
+        lambda: supervisor.evaluate_runtime(
+            "document.title === 'Supervisor pytest' && document.readyState === 'complete'"
+        ).get("result") is True,
+        timeout=10,
+        what="the supervisor-owned page and iframe to finish loading",
+    )
     result = supervisor.evaluate_runtime(expression)
     assert result["ok"] is True, result
 

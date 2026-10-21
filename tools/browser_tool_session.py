@@ -472,19 +472,14 @@ def _bind_session_page_target(task_id: str, session_info: dict[str, Any]) -> Non
     """
     if not session_info.get("cdp_url") and not _cdp._get_cdp_override_raw():
         return
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
-        if supervisor is None:
-            return
-        target_id = supervisor.page_target_id()
-        if target_id:
-            session_info["page_target_id"] = target_id
-    except Exception as exc:
-        _bt.logger.debug(
-            "Could not bind page_target_id for task=%s: %s", task_id, exc
-        )
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None:
+        return
+    target_id = supervisor.page_target_id()
+    if target_id:
+        session_info["page_target_id"] = target_id
 
 
 # A daemon caches snapshot refs and its CDP endpoint across commands.

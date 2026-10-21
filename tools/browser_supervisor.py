@@ -245,12 +245,14 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
         return _schedule(endpoint(), loop, timeout=timeout)
 
-    def navigate_page(self, url: str, timeout: float = 30.0) -> Dict[str, Any]:
+    def navigate_page(self, url: str, timeout: float = 30.0) -> dict[str, Any]:
         """Navigate this supervisor's dedicated page via live CDP Page.navigate.
 
         Bypasses agent-browser so multi-session CDP sessions do not race on
         whichever tab agent-browser considers active.
         """
+        from websockets.exceptions import WebSocketException
+
         if not isinstance(url, str) or not url.strip():
             return {"ok": False, "error": "url must be a non-empty string"}
         loop = self._loop
@@ -264,7 +266,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if not session_id:
             return {"ok": False, "error": "supervisor has no attached page session"}
 
-        async def _do_nav() -> Dict[str, Any]:
+        async def _do_nav() -> dict[str, Any]:
             if target_id:
                 try:
                     await self._cdp(
@@ -272,8 +274,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         {"targetId": target_id},
                         timeout=min(timeout, 5.0),
                     )
-                except Exception:
-                    pass
+                except (RuntimeError, OSError, TimeoutError, WebSocketException) as exc:
+                    logger.debug("CDP supervisor %s: target activation failed: %s",
+                                 self.task_id, _redact_cdp_error_text(exc))
             return await self._cdp(
                 "Page.navigate",
                 {"url": url.strip()},
@@ -288,8 +291,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             if fut is None:
                 return {"ok": False, "error": "Browser supervisor loop unavailable"}
             response = fut.result(timeout=timeout + 1)
-        except Exception as exc:
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        except (RuntimeError, OSError, TimeoutError, WebSocketException) as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {_redact_cdp_error_text(exc)}"}
 
         result = response.get("result") if isinstance(response, dict) else None
         error_text = None
@@ -551,6 +554,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         adopt the first existing page, which is shared across all Hermes
         sessions connected to the same headed browser (#69727).
         """
+        from websockets.exceptions import WebSocketException
+
         if self._page_target_id:
             try:
                 resp = await self._cdp("Target.getTargets")
@@ -560,7 +565,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     for t in targets
                 ):
                     return self._page_target_id
-            except Exception as exc:
+            except (RuntimeError, OSError, TimeoutError, WebSocketException) as exc:
                 logger.debug(
                     "CDP supervisor %s: getTargets while reusing page failed: %s",
                     self.task_id,
@@ -581,12 +586,14 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
     async def _close_owned_page_target(self) -> None:
         """Close the blank page we created for this task_id, if any."""
+        from websockets.exceptions import WebSocketException
+
         if not self._owns_page_target or not self._page_target_id:
             return
         target_id = self._page_target_id
         try:
             await self._cdp("Target.closeTarget", {"targetId": target_id})
-        except Exception as exc:
+        except (RuntimeError, OSError, TimeoutError, WebSocketException) as exc:
             logger.debug(
                 "CDP supervisor %s: closeTarget %s failed: %s",
                 self.task_id,
