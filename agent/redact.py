@@ -572,10 +572,11 @@ _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 # WhatsApp Cloud wa_id values are bare 10-15 digit E.164-like sequences.
 # Keep this separate from the established +E.164 matcher so code-shaped
 # advisory text can retain ordinary IDs, epochs, and numeric examples.
+# Hyphens and underscores connect identifier segments, not standalone numbers.
 _WHATSAPP_BARE_PHONE_RE = re.compile(
-    r"(?<![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9_-])"
     r"([1-9]\d{9,14})"
-    r"(?![A-Za-z0-9])"
+    r"(?![A-Za-z0-9_-])"
 )
 
 # Web/transport URLs whose path/query digits must stay intact. The bare
