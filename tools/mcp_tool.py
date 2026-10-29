@@ -38,7 +38,7 @@ from tools.mcp_tool_health import MCPServerHealthMixin
 _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 
 
-def _coerce_mcp_stdio_args(args: Any) -> List[str]:
+def _coerce_mcp_stdio_args(args: Any) -> list[str]:
     """Turn config ``args`` into an argv list of strings.
 
     YAML can persist a list as a quoted JSON/Python-literal string

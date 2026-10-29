@@ -7,7 +7,7 @@ value directly into the spawn argv treats every character as a token.
 """
 import pytest
 
-import tools.mcp_tool as mcp_tool
+from tools import mcp_tool
 
 
 def _coerce(args):
